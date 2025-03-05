@@ -9,17 +9,19 @@ require (
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792
 	github.com/btcsuite/winsvc v1.0.0
 	github.com/davecgh/go-spew v1.1.1
-	github.com/decred/dcrd/crypto/blake256 v1.0.1
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1
+	github.com/decred/dcrd/container/lru v1.0.0
+	github.com/decred/dcrd/crypto/blake256 v1.1.0
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.3.0
 	github.com/decred/dcrd/lru v1.0.0
+	github.com/decred/dcrd/mixing v0.5.0
 	github.com/decred/dcrd/wire v1.7.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/jessevdk/go-flags v1.4.0
 	github.com/jrick/logrotate v1.0.0
 	github.com/stretchr/testify v1.8.4
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
-	golang.org/x/crypto v0.22.0
-	golang.org/x/sys v0.19.0
+	golang.org/x/crypto v0.33.0
+	golang.org/x/sys v0.30.0
 	pgregory.net/rapid v1.2.0
 )
 

@@ -150,6 +150,10 @@ func isPubKeyScript(script []byte) bool {
 	return extractPubKey(script) != nil
 }
 
+func ExtractPubKeyHash(script []byte) []byte {
+	return extractPubKeyHash(script)
+}
+
 // extractPubKeyHash extracts the public key hash from the passed script if it
 // is a standard pay-to-pubkey-hash script.  It will return nil otherwise.
 func extractPubKeyHash(script []byte) []byte {
