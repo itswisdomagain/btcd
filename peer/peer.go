@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	dcrwlru "decred.org/dcrwallet/v5/lru"
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -51,6 +52,8 @@ const (
 	// maxKnownInventory is the maximum number of items to keep in the known
 	// inventory cache.
 	maxKnownInventory = 1000
+
+	invLRUSize = 5000
 
 	// pingInterval is the interval of time to wait in between sending ping
 	// messages.
@@ -475,6 +478,7 @@ type Peer struct {
 	prevGetHdrsBegin   *chainhash.Hash
 	prevGetHdrsStop    *chainhash.Hash
 
+	invsSent           dcrwlru.Cache[chainhash.Hash] // Hashes from sent inventory messages
 	requestedMixMsgsMu sync.Mutex
 	requestedMixMsgs   map[chainhash.Hash]chan<- mixing.Message
 
@@ -2492,6 +2496,9 @@ func (p *Peer) WaitForDisconnect() {
 	<-p.quit
 }
 
+// InvsSent returns an LRU cache of inventory hashes sent to the remote peer.
+func (rp *Peer) InvsSent() *dcrwlru.Cache[chainhash.Hash] { return &rp.invsSent }
+
 // newPeerBase returns a new base bitcoin peer based on the inbound flag.  This
 // is used by the NewInboundPeer and NewOutboundPeer functions to perform base
 // setup needed by both types of peers.
@@ -2517,6 +2524,7 @@ func newPeerBase(origCfg *Config, inbound bool) *Peer {
 		inbound:          inbound,
 		wireEncoding:     wire.BaseEncoding,
 		knownInventory:   lru.NewCache(maxKnownInventory),
+		invsSent:         dcrwlru.NewCache[chainhash.Hash](invLRUSize),
 		requestedMixMsgs: make(map[chainhash.Hash]chan<- mixing.Message),
 		stallControl:     make(chan stallControlMsg, 1), // nonblocking sync
 		outputQueue:      make(chan outMsg, outputBufferSize),

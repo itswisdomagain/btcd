@@ -2,6 +2,7 @@ module github.com/btcsuite/btcd
 
 require (
 	decred.org/cspp/v2 v2.4.0
+	decred.org/dcrwallet/v5 v5.0.0-20250305050721-f4b830c084b6
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4
 	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
@@ -18,8 +19,8 @@ require (
 	github.com/decred/dcrd/lru v1.0.0
 	github.com/decred/dcrd/mixing v0.5.0
 	github.com/decred/dcrd/wire v1.7.0
-	github.com/gorilla/websocket v1.5.0
-	github.com/jessevdk/go-flags v1.4.0
+	github.com/gorilla/websocket v1.5.1
+	github.com/jessevdk/go-flags v1.5.0
 	github.com/jrick/logrotate v1.0.0
 	github.com/stretchr/testify v1.8.4
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
@@ -34,10 +35,10 @@ require (
 	github.com/decred/dcrd/chaincfg/chainhash v1.0.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/kkdai/bstream v0.0.0-20161212061736-f391b8402d23 // indirect
-	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.8 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.0 // indirect
-	golang.org/x/net v0.24.0 // indirect
+	golang.org/x/net v0.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.3.0 // indirect
 )
@@ -74,4 +75,6 @@ retract (
 	v0.13.0-beta
 )
 
-go 1.22
+go 1.23
+
+toolchain go1.23.4
