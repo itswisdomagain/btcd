@@ -58,6 +58,9 @@ const (
 	// new messages that occur during the version-verack handshake will not
 	// come with a protocol version bump.
 	AddrV2Version uint32 = 70016
+
+	// MixVersion is the protocol version which adds peer-to-peer mixing.
+	MixVersion uint32 = 70017
 )
 
 const (

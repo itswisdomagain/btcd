@@ -67,6 +67,15 @@ const (
 	CmdCFCheckpt    = "cfcheckpt"
 	CmdSendAddrV2   = "sendaddrv2"
 	CmdWTxIdRelay   = "wtxidrelay"
+
+	CmdMixPairReq      = "mixpairreq"
+	CmdMixKeyExchange  = "mixkeyxchg"
+	CmdMixCiphertexts  = "mixcphrtxt"
+	CmdMixSlotReserve  = "mixslotres"
+	CmdMixFactoredPoly = "mixfactpoly"
+	CmdMixDCNet        = "mixdcnet"
+	CmdMixConfirm      = "mixconfirm"
+	CmdMixSecrets      = "mixsecrets"
 )
 
 var (
