@@ -33,6 +33,7 @@ const (
 	InvTypeTx                   InvType = 1
 	InvTypeBlock                InvType = 2
 	InvTypeFilteredBlock        InvType = 3
+	InvTypeMix                  InvType = 4
 	InvTypeWitnessBlock         InvType = InvTypeBlock | InvWitnessFlag
 	InvTypeWitnessTx            InvType = InvTypeTx | InvWitnessFlag
 	InvTypeFilteredWitnessBlock InvType = InvTypeFilteredBlock | InvWitnessFlag
@@ -47,6 +48,7 @@ var ivStrings = map[InvType]string{
 	InvTypeWitnessBlock:         "MSG_WITNESS_BLOCK",
 	InvTypeWitnessTx:            "MSG_WITNESS_TX",
 	InvTypeFilteredWitnessBlock: "MSG_FILTERED_WITNESS_BLOCK",
+	InvTypeMix:                  "MSG_MIX",
 }
 
 // String returns the InvType in human-readable form.

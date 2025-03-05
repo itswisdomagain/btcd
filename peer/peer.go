@@ -21,9 +21,11 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/mixing"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/go-socks/socks"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/lru"
 )
 
@@ -472,6 +474,9 @@ type Peer struct {
 	prevGetHdrsMtx     sync.Mutex
 	prevGetHdrsBegin   *chainhash.Hash
 	prevGetHdrsStop    *chainhash.Hash
+
+	requestedMixMsgsMu sync.Mutex
+	requestedMixMsgs   map[chainhash.Hash]chan<- mixing.Message
 
 	// These fields keep track of statistics for the peer and are protected
 	// by the statsMtx mutex.
@@ -992,6 +997,113 @@ func (p *Peer) PushGetHeadersMsg(locator blockchain.BlockLocator, stopHash *chai
 	p.prevGetHdrsStop = stopHash
 	p.prevGetHdrsMtx.Unlock()
 	return nil
+}
+
+func (p *Peer) addRequestedMixMsg(hash *chainhash.Hash, c chan<- mixing.Message) (newRequest bool) {
+	p.requestedMixMsgsMu.Lock()
+	_, ok := p.requestedMixMsgs[*hash]
+	if !ok {
+		p.requestedMixMsgs[*hash] = c
+	}
+	p.requestedMixMsgsMu.Unlock()
+	return !ok
+}
+
+func (p *Peer) deleteRequestedMixMsg(hash *chainhash.Hash) {
+	p.requestedMixMsgsMu.Lock()
+	delete(p.requestedMixMsgs, *hash)
+	p.requestedMixMsgsMu.Unlock()
+}
+
+var (
+	blake256Hasher = blake256.New()
+	blake256Mu     sync.Mutex
+)
+
+func writeMixMsgHash(msg mixing.Message) chainhash.Hash {
+	blake256Mu.Lock()
+	defer blake256Mu.Unlock()
+
+	msg.WriteHash(blake256Hasher)
+	return msg.Hash()
+}
+
+func (rp *Peer) receivedMixMsg(msg mixing.Message) {
+	// const opf = "remotepeer(%v).receivedMixMsg(%v)"
+	mixHash := writeMixMsgHash(msg)
+	rp.requestedMixMsgsMu.Lock()
+	c, ok := rp.requestedMixMsgs[mixHash]
+	delete(rp.requestedMixMsgs, mixHash)
+	rp.requestedMixMsgsMu.Unlock()
+	if !ok {
+		// op := errors.Opf(opf, rp.raddr, &mixHash)
+		// err := errors.E(op, errors.Protocol, "received unrequested mix msg")
+		// TODO!
+		println("received unrequested mix msg from", rp.addr)
+		rp.Disconnect()
+		return
+	}
+	select {
+	case c <- msg:
+	default:
+		// TODO!
+		println("failed to pass received mix message to requester's channel")
+	}
+}
+
+// MixMessages requests multiple mixing messages at a time from a RemotePeer
+// using a single getdata message.  It returns when all of the messages and/or
+// notfound messages have been received.  The same message may not be requested
+// multiple times concurrently from the same peer.  Returns ErrNotFound with a
+// slice of one or more nil messages if any notfound messages are received for
+// requested mix messages.
+func (p *Peer) MixMessages(hashes []*chainhash.Hash) ([]mixing.Message, error) {
+	opf := "remotepeer(%v).MixMessages: %w"
+
+	m := wire.NewMsgGetDataSizeHint(uint(len(hashes)))
+	cs := make([]chan mixing.Message, len(hashes))
+	for i, h := range hashes {
+		err := m.AddInvVect(wire.NewInvVect(wire.InvTypeMix, h))
+		if err != nil {
+			return nil, fmt.Errorf(opf, p.addr, err)
+		}
+		cs[i] = make(chan mixing.Message, 1)
+		if !p.addRequestedMixMsg(h, cs[i]) {
+			for _, h := range hashes[:i] {
+				p.deleteRequestedMixMsg(h)
+			}
+			err = fmt.Errorf("mix msg %v is already being requested from this peer", h)
+			return nil, fmt.Errorf(opf, p.addr, err)
+		}
+	}
+
+	p.QueueMessage(m, nil)
+
+	msgs := make([]mixing.Message, len(hashes))
+	var notfound bool
+	stalled := time.NewTimer(stallTickInterval * 2) // TODO!
+	for i := 0; i < len(hashes); i++ {
+		select {
+		case <-stalled.C:
+			for _, h := range hashes[i:] {
+				p.deleteRequestedMixMsg(h)
+			}
+			err := fmt.Errorf(opf, p.addr, fmt.Errorf("peer appears stalled"))
+			p.Disconnect()
+			return nil, err
+		case <-p.quit:
+			stalled.Stop()
+			return nil, fmt.Errorf("peer disconnected")
+		case m, ok := <-cs[i]:
+			msgs[i] = m
+			notfound = notfound || !ok
+		}
+	}
+	stalled.Stop()
+	if notfound {
+		return msgs, fmt.Errorf("not found")
+	}
+	return msgs, nil
 }
 
 // PushRejectMsg sends a reject message for the provided command, reject code,
@@ -1611,6 +1723,23 @@ out:
 			if p.cfg.Listeners.OnSendHeaders != nil {
 				p.cfg.Listeners.OnSendHeaders(p, msg)
 			}
+
+		case *wire.MsgMixPairReq:
+			p.receivedMixMsg(msg)
+		case *wire.MsgMixKeyExchange:
+			p.receivedMixMsg(msg)
+		case *wire.MsgMixCiphertexts:
+			p.receivedMixMsg(msg)
+		case *wire.MsgMixSlotReserve:
+			p.receivedMixMsg(msg)
+		case *wire.MsgMixDCNet:
+			p.receivedMixMsg(msg)
+		case *wire.MsgMixConfirm:
+			p.receivedMixMsg(msg)
+		case *wire.MsgMixFactoredPoly:
+			p.receivedMixMsg(msg)
+		case *wire.MsgMixSecrets:
+			p.receivedMixMsg(msg)
 
 		default:
 			log.Debugf("Received unhandled message of type %v "+
@@ -2385,21 +2514,22 @@ func newPeerBase(origCfg *Config, inbound bool) *Peer {
 	}
 
 	p := Peer{
-		inbound:         inbound,
-		wireEncoding:    wire.BaseEncoding,
-		knownInventory:  lru.NewCache(maxKnownInventory),
-		stallControl:    make(chan stallControlMsg, 1), // nonblocking sync
-		outputQueue:     make(chan outMsg, outputBufferSize),
-		sendQueue:       make(chan outMsg, 1),   // nonblocking sync
-		sendDoneQueue:   make(chan struct{}, 1), // nonblocking sync
-		outputInvChan:   make(chan *wire.InvVect, outputBufferSize),
-		inQuit:          make(chan struct{}),
-		queueQuit:       make(chan struct{}),
-		outQuit:         make(chan struct{}),
-		quit:            make(chan struct{}),
-		cfg:             cfg, // Copy so caller can't mutate.
-		services:        cfg.Services,
-		protocolVersion: cfg.ProtocolVersion,
+		inbound:          inbound,
+		wireEncoding:     wire.BaseEncoding,
+		knownInventory:   lru.NewCache(maxKnownInventory),
+		requestedMixMsgs: make(map[chainhash.Hash]chan<- mixing.Message),
+		stallControl:     make(chan stallControlMsg, 1), // nonblocking sync
+		outputQueue:      make(chan outMsg, outputBufferSize),
+		sendQueue:        make(chan outMsg, 1),   // nonblocking sync
+		sendDoneQueue:    make(chan struct{}, 1), // nonblocking sync
+		outputInvChan:    make(chan *wire.InvVect, outputBufferSize),
+		inQuit:           make(chan struct{}),
+		queueQuit:        make(chan struct{}),
+		outQuit:          make(chan struct{}),
+		quit:             make(chan struct{}),
+		cfg:              cfg, // Copy so caller can't mutate.
+		services:         cfg.Services,
+		protocolVersion:  cfg.ProtocolVersion,
 	}
 	return &p
 }
