@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/database"
 	_ "github.com/btcsuite/btcd/database/ffldb"
 	"github.com/btcsuite/btcd/mempool"
+	"github.com/btcsuite/btcd/mixing"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -34,6 +35,7 @@ func init() {
 type noopPeerNotifier struct{}
 
 func (noopPeerNotifier) AnnounceNewTransactions([]*mempool.TxDesc)            {}
+func (noopPeerNotifier) AnnounceMixMessages(msgs []mixing.Message)            {}
 func (noopPeerNotifier) UpdatePeerHeights(*chainhash.Hash, int32, *peer.Peer) {}
 func (noopPeerNotifier) RelayInventory(*wire.InvVect, interface{})            {}
 func (noopPeerNotifier) TransactionConfirmed(*btcutil.Tx)                     {}
