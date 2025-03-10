@@ -10,6 +10,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/mempool"
+	"github.com/btcsuite/btcd/mixing"
+	"github.com/btcsuite/btcd/mixing/mixpool"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/wire"
 )
@@ -19,6 +21,10 @@ import (
 // this interface.
 type PeerNotifier interface {
 	AnnounceNewTransactions(newTxs []*mempool.TxDesc)
+
+	// AnnounceMixMessages generates and relays inventory vectors of the
+	// passed messages.
+	AnnounceMixMessages(msgs []mixing.Message)
 
 	UpdatePeerHeights(latestBlkHash *chainhash.Hash, latestHeight int32, updateSource *peer.Peer)
 
@@ -38,4 +44,8 @@ type Config struct {
 	MaxPeers           int
 
 	FeeEstimator *mempool.FeeEstimator
+
+	// MixPool specifies the mixing pool to use for transient mixing
+	// messages broadcast across the network.
+	MixPool *mixpool.Pool
 }

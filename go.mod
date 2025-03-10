@@ -2,7 +2,6 @@ module github.com/btcsuite/btcd
 
 require (
 	decred.org/cspp/v2 v2.4.0
-	decred.org/dcrwallet/v5 v5.0.0-20250305050721-f4b830c084b6
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4
 	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
@@ -12,6 +11,7 @@ require (
 	github.com/btcsuite/winsvc v1.0.0
 	github.com/companyzero/sntrup4591761 v0.0.0-20220309191932-9e0f3af2f07a
 	github.com/davecgh/go-spew v1.1.1
+	github.com/decred/dcrd/container/apbf v1.0.1
 	github.com/decred/dcrd/container/lru v1.0.0
 	github.com/decred/dcrd/crypto/blake256 v1.1.0
 	github.com/decred/dcrd/crypto/rand v1.0.1
@@ -32,6 +32,7 @@ require (
 
 require (
 	github.com/aead/siphash v1.0.1 // indirect
+	github.com/dchest/siphash v1.2.3 // indirect
 	github.com/decred/dcrd/chaincfg/chainhash v1.0.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/kkdai/bstream v0.0.0-20161212061736-f391b8402d23 // indirect

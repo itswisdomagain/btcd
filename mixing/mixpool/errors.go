@@ -8,7 +8,7 @@ import (
 	"errors"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/decred/dcrd/wire"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // RuleError represents a mixpool rule violation.

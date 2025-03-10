@@ -18,7 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	dcrwlru "decred.org/dcrwallet/v5/lru"
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -26,7 +25,6 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/go-socks/socks"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/lru"
 )
 
@@ -207,6 +205,9 @@ type MessageListeners struct {
 
 	// OnSendAddrV2 is invoked when a peer receives a sendaddrv2 message.
 	OnSendAddrV2 func(p *Peer, msg *wire.MsgSendAddrV2)
+
+	// OnMixMessage is invoked when a peer receives a mix** message.
+	OnMixMessage func(p *Peer, msg mixing.Message)
 
 	// OnRead is invoked when a peer receives a bitcoin message.  It
 	// consists of the number of bytes read, the message, and whether or not
@@ -478,10 +479,6 @@ type Peer struct {
 	prevGetHdrsBegin   *chainhash.Hash
 	prevGetHdrsStop    *chainhash.Hash
 
-	invsSent           dcrwlru.Cache[chainhash.Hash] // Hashes from sent inventory messages
-	requestedMixMsgsMu sync.Mutex
-	requestedMixMsgs   map[chainhash.Hash]chan<- mixing.Message
-
 	// These fields keep track of statistics for the peer and are protected
 	// by the statsMtx mutex.
 	statsMtx           sync.RWMutex
@@ -546,6 +543,14 @@ func (p *Peer) UpdateLastAnnouncedBlock(blkHash *chainhash.Hash) {
 // This function is safe for concurrent access.
 func (p *Peer) AddKnownInventory(invVect *wire.InvVect) {
 	p.knownInventory.Add(invVect)
+}
+
+// IsKnownInventory returns whether the passed inventory already exists in
+// the known inventory for the peer.
+//
+// This function is safe for concurrent access.
+func (p *Peer) IsKnownInventory(invVect *wire.InvVect) bool {
+	return p.knownInventory.Contains(*invVect)
 }
 
 // StatsSnapshot returns a snapshot of the current peer flags and statistics.
@@ -1003,113 +1008,6 @@ func (p *Peer) PushGetHeadersMsg(locator blockchain.BlockLocator, stopHash *chai
 	return nil
 }
 
-func (p *Peer) addRequestedMixMsg(hash *chainhash.Hash, c chan<- mixing.Message) (newRequest bool) {
-	p.requestedMixMsgsMu.Lock()
-	_, ok := p.requestedMixMsgs[*hash]
-	if !ok {
-		p.requestedMixMsgs[*hash] = c
-	}
-	p.requestedMixMsgsMu.Unlock()
-	return !ok
-}
-
-func (p *Peer) deleteRequestedMixMsg(hash *chainhash.Hash) {
-	p.requestedMixMsgsMu.Lock()
-	delete(p.requestedMixMsgs, *hash)
-	p.requestedMixMsgsMu.Unlock()
-}
-
-var (
-	blake256Hasher = blake256.New()
-	blake256Mu     sync.Mutex
-)
-
-func writeMixMsgHash(msg mixing.Message) chainhash.Hash {
-	blake256Mu.Lock()
-	defer blake256Mu.Unlock()
-
-	msg.WriteHash(blake256Hasher)
-	return msg.Hash()
-}
-
-func (rp *Peer) receivedMixMsg(msg mixing.Message) {
-	// const opf = "remotepeer(%v).receivedMixMsg(%v)"
-	mixHash := writeMixMsgHash(msg)
-	rp.requestedMixMsgsMu.Lock()
-	c, ok := rp.requestedMixMsgs[mixHash]
-	delete(rp.requestedMixMsgs, mixHash)
-	rp.requestedMixMsgsMu.Unlock()
-	if !ok {
-		// op := errors.Opf(opf, rp.raddr, &mixHash)
-		// err := errors.E(op, errors.Protocol, "received unrequested mix msg")
-		// TODO!
-		println("received unrequested mix msg from", rp.addr)
-		rp.Disconnect()
-		return
-	}
-	select {
-	case c <- msg:
-	default:
-		// TODO!
-		println("failed to pass received mix message to requester's channel")
-	}
-}
-
-// MixMessages requests multiple mixing messages at a time from a RemotePeer
-// using a single getdata message.  It returns when all of the messages and/or
-// notfound messages have been received.  The same message may not be requested
-// multiple times concurrently from the same peer.  Returns ErrNotFound with a
-// slice of one or more nil messages if any notfound messages are received for
-// requested mix messages.
-func (p *Peer) MixMessages(hashes []*chainhash.Hash) ([]mixing.Message, error) {
-	opf := "remotepeer(%v).MixMessages: %w"
-
-	m := wire.NewMsgGetDataSizeHint(uint(len(hashes)))
-	cs := make([]chan mixing.Message, len(hashes))
-	for i, h := range hashes {
-		err := m.AddInvVect(wire.NewInvVect(wire.InvTypeMix, h))
-		if err != nil {
-			return nil, fmt.Errorf(opf, p.addr, err)
-		}
-		cs[i] = make(chan mixing.Message, 1)
-		if !p.addRequestedMixMsg(h, cs[i]) {
-			for _, h := range hashes[:i] {
-				p.deleteRequestedMixMsg(h)
-			}
-			err = fmt.Errorf("mix msg %v is already being requested from this peer", h)
-			return nil, fmt.Errorf(opf, p.addr, err)
-		}
-	}
-
-	p.QueueMessage(m, nil)
-
-	msgs := make([]mixing.Message, len(hashes))
-	var notfound bool
-	stalled := time.NewTimer(stallTickInterval * 2) // TODO!
-	for i := 0; i < len(hashes); i++ {
-		select {
-		case <-stalled.C:
-			for _, h := range hashes[i:] {
-				p.deleteRequestedMixMsg(h)
-			}
-			err := fmt.Errorf(opf, p.addr, fmt.Errorf("peer appears stalled"))
-			p.Disconnect()
-			return nil, err
-		case <-p.quit:
-			stalled.Stop()
-			return nil, fmt.Errorf("peer disconnected")
-		case m, ok := <-cs[i]:
-			msgs[i] = m
-			notfound = notfound || !ok
-		}
-	}
-	stalled.Stop()
-	if notfound {
-		return msgs, fmt.Errorf("not found")
-	}
-	return msgs, nil
-}
-
 // PushRejectMsg sends a reject message for the provided command, reject code,
 // reject reason, and hash.  The hash will only be used when the command is a tx
 // or block and should be nil in other cases.  The wait parameter will cause the
@@ -1334,6 +1232,13 @@ func (p *Peer) maybeAddDeadline(pendingResponses map[string]time.Time, msgCmd st
 		pendingResponses[wire.CmdBlock] = deadline
 		pendingResponses[wire.CmdMerkleBlock] = deadline
 		pendingResponses[wire.CmdTx] = deadline
+		pendingResponses[wire.CmdMixPairReq] = deadline
+		pendingResponses[wire.CmdMixKeyExchange] = deadline
+		pendingResponses[wire.CmdMixCiphertexts] = deadline
+		pendingResponses[wire.CmdMixSlotReserve] = deadline
+		pendingResponses[wire.CmdMixDCNet] = deadline
+		pendingResponses[wire.CmdMixConfirm] = deadline
+		pendingResponses[wire.CmdMixSecrets] = deadline
 		pendingResponses[wire.CmdNotFound] = deadline
 
 	case wire.CmdGetHeaders:
@@ -1395,12 +1300,33 @@ out:
 					fallthrough
 				case wire.CmdMerkleBlock:
 					fallthrough
+				case wire.CmdMixPairReq:
+					fallthrough
+				case wire.CmdMixKeyExchange:
+					fallthrough
+				case wire.CmdMixCiphertexts:
+					fallthrough
+				case wire.CmdMixSlotReserve:
+					fallthrough
+				case wire.CmdMixDCNet:
+					fallthrough
+				case wire.CmdMixConfirm:
+					fallthrough
+				case wire.CmdMixSecrets:
+					fallthrough
 				case wire.CmdTx:
 					fallthrough
 				case wire.CmdNotFound:
 					delete(pendingResponses, wire.CmdBlock)
 					delete(pendingResponses, wire.CmdMerkleBlock)
 					delete(pendingResponses, wire.CmdTx)
+					delete(pendingResponses, wire.CmdMixPairReq)
+					delete(pendingResponses, wire.CmdMixKeyExchange)
+					delete(pendingResponses, wire.CmdMixCiphertexts)
+					delete(pendingResponses, wire.CmdMixSlotReserve)
+					delete(pendingResponses, wire.CmdMixDCNet)
+					delete(pendingResponses, wire.CmdMixConfirm)
+					delete(pendingResponses, wire.CmdMixSecrets)
 					delete(pendingResponses, wire.CmdNotFound)
 
 				default:
@@ -1729,21 +1655,44 @@ out:
 			}
 
 		case *wire.MsgMixPairReq:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
+
 		case *wire.MsgMixKeyExchange:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
+
 		case *wire.MsgMixCiphertexts:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
+
 		case *wire.MsgMixSlotReserve:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
+
 		case *wire.MsgMixDCNet:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
+
 		case *wire.MsgMixConfirm:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
+
 		case *wire.MsgMixFactoredPoly:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
+
 		case *wire.MsgMixSecrets:
-			p.receivedMixMsg(msg)
+			if p.cfg.Listeners.OnMixMessage != nil {
+				p.cfg.Listeners.OnMixMessage(p, msg)
+			}
 
 		default:
 			log.Debugf("Received unhandled message of type %v "+
@@ -2496,8 +2445,13 @@ func (p *Peer) WaitForDisconnect() {
 	<-p.quit
 }
 
-// InvsSent returns an LRU cache of inventory hashes sent to the remote peer.
-func (rp *Peer) InvsSent() *dcrwlru.Cache[chainhash.Hash] { return &rp.invsSent }
+// WaitForDisconnect waits until the peer has completely disconnected and all
+// resources are cleaned up.  This will happen if either the local or remote
+// side has been disconnected or the peer is forcibly disconnected via
+// Disconnect.
+func (p *Peer) DisconnectChan() <-chan struct{} {
+	return p.quit
+}
 
 // newPeerBase returns a new base bitcoin peer based on the inbound flag.  This
 // is used by the NewInboundPeer and NewOutboundPeer functions to perform base
@@ -2521,23 +2475,21 @@ func newPeerBase(origCfg *Config, inbound bool) *Peer {
 	}
 
 	p := Peer{
-		inbound:          inbound,
-		wireEncoding:     wire.BaseEncoding,
-		knownInventory:   lru.NewCache(maxKnownInventory),
-		invsSent:         dcrwlru.NewCache[chainhash.Hash](invLRUSize),
-		requestedMixMsgs: make(map[chainhash.Hash]chan<- mixing.Message),
-		stallControl:     make(chan stallControlMsg, 1), // nonblocking sync
-		outputQueue:      make(chan outMsg, outputBufferSize),
-		sendQueue:        make(chan outMsg, 1),   // nonblocking sync
-		sendDoneQueue:    make(chan struct{}, 1), // nonblocking sync
-		outputInvChan:    make(chan *wire.InvVect, outputBufferSize),
-		inQuit:           make(chan struct{}),
-		queueQuit:        make(chan struct{}),
-		outQuit:          make(chan struct{}),
-		quit:             make(chan struct{}),
-		cfg:              cfg, // Copy so caller can't mutate.
-		services:         cfg.Services,
-		protocolVersion:  cfg.ProtocolVersion,
+		inbound:         inbound,
+		wireEncoding:    wire.BaseEncoding,
+		knownInventory:  lru.NewCache(maxKnownInventory),
+		stallControl:    make(chan stallControlMsg, 1), // nonblocking sync
+		outputQueue:     make(chan outMsg, outputBufferSize),
+		sendQueue:       make(chan outMsg, 1),   // nonblocking sync
+		sendDoneQueue:   make(chan struct{}, 1), // nonblocking sync
+		outputInvChan:   make(chan *wire.InvVect, outputBufferSize),
+		inQuit:          make(chan struct{}),
+		queueQuit:       make(chan struct{}),
+		outQuit:         make(chan struct{}),
+		quit:            make(chan struct{}),
+		cfg:             cfg, // Copy so caller can't mutate.
+		services:        cfg.Services,
+		protocolVersion: cfg.ProtocolVersion,
 	}
 	return &p
 }

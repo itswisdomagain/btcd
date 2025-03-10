@@ -6,6 +6,8 @@ package netsync
 
 import (
 	"container/list"
+	"errors"
+	"fmt"
 	"math/rand"
 	"net"
 	"sync"
@@ -18,8 +20,11 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/database"
 	"github.com/btcsuite/btcd/mempool"
+	"github.com/btcsuite/btcd/mixing"
+	"github.com/btcsuite/btcd/mixing/mixpool"
 	peerpkg "github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/decred/dcrd/container/apbf"
 )
 
 const (
@@ -32,6 +37,42 @@ const (
 	// hashes to store in memory.
 	maxRejectedTxns = 1000
 
+	// maxRejectedTxnsDcrd specifies the maximum number of recently rejected
+	// transactions to track.  This is primarily used to avoid wasting a bunch
+	// of bandwidth from requesting transactions that are already known to be
+	// invalid again from multiple peers, however, it also doubles as DoS
+	// protection against malicious peers.
+	//
+	// Recall that there are 125 connection slots by default.  Assuming the
+	// default setting of 8 outbound connections, which attackers cannot
+	// control, that leaves 117 max inbound connections which could potentially
+	// be malicious.  maxRejectedTxnsDcrd is set to target tracking the maximum
+	// number of rejected transactions that would result from 120 connections
+	// with malicious peers.  120 is used since it is strictly greater than the
+	// aforementioned 117 max inbound connections while still providing for the
+	// possibility of a few happenstance malicious outbound connections as well.
+	//
+	// It's also worth noting that even if attackers were to manage to exceed
+	// the configured value, the result is not catastrophic as it would only
+	// result in increased bandwidth usage versus not exceeding it.
+	//
+	// rejectedTxnsFPRateDcrd is the false positive rate to use for the APBF used to
+	// track recently rejected transactions.  It is set to a rate of 1 per 10
+	// million to make it incredibly unlikely that any transactions that haven't
+	// actually been rejected are incorrectly treated as if they had.
+	//
+	// These values result in about 568 KiB memory usage including overhead.
+	maxRejectedTxnsDcrd    = 62500
+	rejectedTxnsFPRateDcrd = 0.0000001
+
+	// maxRejectedMixMsgs specifies the maximum number of recently
+	// rejected mixing messages to track, and rejectedMixMsgsFPRate is the
+	// false positive rate for the APBF.  These values have not been tuned
+	// specifically for the mixing messages, and the equivalent constants
+	// for handling rejected transactions are used.
+	maxRejectedMixMsgs    = maxRejectedTxnsDcrd
+	rejectedMixMsgsFPRate = rejectedTxnsFPRateDcrd
+
 	// maxRequestedBlocks is the maximum number of requested block
 	// hashes to store in memory.
 	maxRequestedBlocks = wire.MaxInvPerMsg
@@ -39,6 +80,10 @@ const (
 	// maxRequestedTxns is the maximum number of requested transactions
 	// hashes to store in memory.
 	maxRequestedTxns = wire.MaxInvPerMsg
+
+	// maxRequestedMixMsgs is the maximum number of hashes of in-flight
+	// mixing messages.
+	maxRequestedMixMsgs = wire.MaxInvPerMsg
 
 	// maxStallDuration is the time after which we will disconnect our
 	// current sync peer if we haven't made progress.
@@ -99,6 +144,14 @@ type txMsg struct {
 	reply chan struct{}
 }
 
+// mixMsg packages a mix message and the peer it came from together
+// so the ... has access to that information.
+type mixMsg struct {
+	msg   mixing.Message
+	peer  *peerpkg.Peer
+	reply chan error
+}
+
 // getSyncPeerMsg is a message type to be sent across the message channel for
 // retrieving the current sync peer.
 type getSyncPeerMsg struct {
@@ -148,10 +201,11 @@ type headerNode struct {
 // peerSyncState stores additional information that the SyncManager tracks
 // about a peer.
 type peerSyncState struct {
-	syncCandidate   bool
-	requestQueue    []*wire.InvVect
-	requestedTxns   map[chainhash.Hash]struct{}
-	requestedBlocks map[chainhash.Hash]struct{}
+	syncCandidate    bool
+	requestQueue     []*wire.InvVect
+	requestedTxns    map[chainhash.Hash]struct{}
+	requestedBlocks  map[chainhash.Hash]struct{}
+	requestedMixMsgs map[chainhash.Hash]struct{}
 }
 
 // limitAdd is a helper function for maps that require a maximum limit by
@@ -184,6 +238,7 @@ type SyncManager struct {
 	shutdown       int32
 	chain          *blockchain.BlockChain
 	txMemPool      *mempool.TxPool
+	mixPool        *mixpool.Pool
 	chainParams    *chaincfg.Params
 	progressLogger *blockProgressLogger
 	msgChan        chan interface{}
@@ -192,8 +247,10 @@ type SyncManager struct {
 
 	// These fields should only be accessed from the blockHandler thread
 	rejectedTxns     map[chainhash.Hash]struct{}
+	rejectedMixMsgs  *apbf.Filter
 	requestedTxns    map[chainhash.Hash]struct{}
 	requestedBlocks  map[chainhash.Hash]struct{}
+	requestedMixMsgs map[chainhash.Hash]struct{}
 	syncPeer         *peerpkg.Peer
 	peerStates       map[*peerpkg.Peer]*peerSyncState
 	lastProgressTime time.Time
@@ -471,9 +528,10 @@ func (sm *SyncManager) handleNewPeerMsg(peer *peerpkg.Peer) {
 	// Initialize the peer state.
 	isSyncCandidate := sm.isSyncCandidate(peer)
 	sm.peerStates[peer] = &peerSyncState{
-		syncCandidate:   isSyncCandidate,
-		requestedTxns:   make(map[chainhash.Hash]struct{}),
-		requestedBlocks: make(map[chainhash.Hash]struct{}),
+		syncCandidate:    isSyncCandidate,
+		requestedTxns:    make(map[chainhash.Hash]struct{}),
+		requestedBlocks:  make(map[chainhash.Hash]struct{}),
+		requestedMixMsgs: make(map[chainhash.Hash]struct{}),
 	}
 
 	// Start syncing by choosing the best candidate if needed.
@@ -552,6 +610,52 @@ func (sm *SyncManager) handleDonePeerMsg(peer *peerpkg.Peer) {
 	log.Infof("Lost peer %s", peer)
 
 	sm.clearRequestedState(state)
+
+	// Re-request in-flight mix messages that were not received by the
+	// disconnected peer if the data was announced by another peer. Remove the
+	// data from the manager's requested data maps if no other peers have
+	// announced the data.
+	requestQueues := make(map[*peerpkg.Peer][]wire.InvVect)
+	var inv wire.InvVect
+	inv.Type = wire.InvTypeMix
+MixHashes:
+	for mixHash := range state.requestedMixMsgs {
+		inv.Hash = mixHash
+		for pp, ss := range sm.peerStates {
+			if !pp.IsKnownInventory(&inv) {
+				continue
+			}
+			invs := append(requestQueues[pp], inv)
+			requestQueues[pp] = invs
+			ss.requestedMixMsgs[mixHash] = struct{}{}
+			continue MixHashes
+		}
+		// No peers found that have announced this data.
+		delete(sm.requestedMixMsgs, mixHash)
+	}
+	for pp, requestQueue := range requestQueues {
+		var numRequested int32
+		gdmsg := wire.NewMsgGetData()
+		for i := range requestQueue {
+			// Note the copy is intentional here to avoid keeping a reference
+			// into the request queue map from the message queue since that
+			// reference could potentially prevent the map from being garbage
+			// collected for an extended period of time.
+			ivCopy := requestQueue[i]
+			gdmsg.AddInvVect(&ivCopy)
+			numRequested++
+			if numRequested == wire.MaxInvPerMsg {
+				// Send full getdata message and reset.
+				pp.QueueMessage(gdmsg, nil)
+				gdmsg = wire.NewMsgGetData()
+				numRequested = 0
+			}
+		}
+
+		if len(gdmsg.InvList) > 0 {
+			pp.QueueMessage(gdmsg, nil)
+		}
+	}
 
 	if peer == sm.syncPeer {
 		// Update the sync peer. The server has already disconnected the
@@ -667,6 +771,71 @@ func (sm *SyncManager) handleTxMsg(tmsg *txMsg) {
 	}
 
 	sm.peerNotifier.AnnounceNewTransactions(acceptedTxs)
+}
+
+// handleMixMsg handles mixing messages from all peers.
+func (sm *SyncManager) handleMixMsg(mmsg *mixMsg) error {
+	peer := mmsg.peer
+	state, exists := sm.peerStates[peer]
+	if !exists {
+		log.Warnf("Received mix message from unknown peer %s", peer)
+		return nil
+	}
+
+	mixHash := mmsg.msg.Hash()
+
+	// Ignore transactions that have already been rejected.  The transaction was
+	// unsolicited if it was already previously rejected.
+	if sm.rejectedMixMsgs.Contains(mixHash[:]) {
+		log.Debugf("Ignoring unsolicited previously rejected mix message %v "+
+			"from %s", &mixHash, peer)
+		return nil
+	}
+
+	accepted, err := sm.mixPool.AcceptMessage(mmsg.msg)
+
+	// Remove message from request maps. Either the mixpool already knows
+	// about it and as such we shouldn't have any more instances of trying
+	// to fetch it, or we failed to insert and thus we'll retry next time
+	// we get an inv.
+	delete(state.requestedTxns, mixHash)
+	delete(sm.requestedMixMsgs, mixHash)
+
+	if err != nil {
+		// Do not request this message again until a new block has
+		// been processed.  If the message is an orphan KE, it is
+		// tracked internally by mixpool as an orphan; there is no
+		// need to request it again after requesting the unknown PR.
+		sm.rejectedMixMsgs.Add(mixHash[:])
+
+		// When the error is a rule error, it means the message was
+		// simply rejected as opposed to something actually going wrong,
+		// so log it as such.
+		//
+		// When the error is an orphan KE with unknown PR, the PR will be
+		// requested from the peer submitting the KE.  This is a normal
+		// occurrence, and will be logged at debug instead at error level.
+		//
+		// Otherwise, something really did go wrong, so log it as an
+		// actual error.
+		var rErr *mixpool.RuleError
+		var missingPRErr *mixpool.MissingOwnPRError
+		if errors.As(err, &rErr) || errors.As(err, &missingPRErr) {
+			log.Debugf("Rejected %T mixing message %v from %s: %v",
+				mmsg.msg, &mixHash, peer, err)
+		} else {
+			log.Errorf("Failed to process %T mixing message %v: %v",
+				mmsg.msg, &mixHash, err)
+		}
+		return err
+	}
+
+	if len(accepted) == 0 {
+		return nil
+	}
+
+	sm.peerNotifier.AnnounceMixMessages(accepted)
+	return nil
 }
 
 // current returns true if we believe we are synced with our peers, false if we
@@ -831,6 +1000,12 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 
 		// Clear the rejected transactions.
 		sm.rejectedTxns = make(map[chainhash.Hash]struct{})
+
+		// Remove expired pair requests and completed mixes from
+		// mixpool.
+		msgBlock := bmsg.block.MsgBlock()
+		sm.mixPool.RemoveSpentPRs(msgBlock.Transactions)
+		sm.mixPool.ExpireMessagesInBackground(uint32(bmsg.block.Height()))
 	}
 
 	// Update the block height for this peer. But only send a message to
@@ -1139,6 +1314,22 @@ func (sm *SyncManager) haveInventory(invVect *wire.InvVect) (bool, error) {
 		}
 
 		return false, nil
+
+	case wire.InvTypeMix:
+		if sm.rejectedMixMsgs.Contains(invVect.Hash[:]) {
+			return true, nil
+		}
+
+		if sm.mixPool.HaveMessage(&invVect.Hash) {
+			return true, nil
+		}
+
+		// TODO: It would be ideal here to not 'need' previously-observed
+		// messages that are known/expected to fail validation, or messages
+		// that have already been removed from mixpool.  An LRU of recently
+		// removed mixpool messages may work well.
+
+		return false, nil
 	}
 
 	// The requested inventory is an unsupported type, so just claim
@@ -1202,6 +1393,7 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 		case wire.InvTypeTx:
 		case wire.InvTypeWitnessBlock:
 		case wire.InvTypeWitnessTx:
+		case wire.InvTypeMix:
 		default:
 			continue
 		}
@@ -1212,6 +1404,14 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 
 		// Ignore inventory when we're in headers-first mode.
 		if sm.headersFirstMode {
+			continue
+		}
+
+		// Ignore mixing messages before the chain is current. Pair request (PR)
+		// messages reference unspent outputs that must be checked to exist and
+		// be unspent before they are accepted, and all later messages must
+		// reference an existing PR recorded in the mixing pool.
+		if iv.Type == wire.InvTypeMix && !sm.current() {
 			continue
 		}
 
@@ -1332,6 +1532,16 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 				gdmsg.AddInvVect(iv)
 				numRequested++
 			}
+
+		case wire.InvTypeMix:
+			// Request the mixing message if there is not already a
+			// pending request.
+			if _, exists := sm.requestedTxns[iv.Hash]; !exists {
+				limitAdd(sm.requestedMixMsgs, iv.Hash, maxRequestedMixMsgs)
+				limitAdd(state.requestedMixMsgs, iv.Hash, maxRequestedMixMsgs)
+				gdmsg.AddInvVect(iv)
+				numRequested++
+			}
 		}
 
 		if numRequested >= wire.MaxInvPerMsg {
@@ -1365,6 +1575,10 @@ out:
 			case *txMsg:
 				sm.handleTxMsg(msg)
 				msg.reply <- struct{}{}
+
+			case *mixMsg:
+				err := sm.handleMixMsg(msg)
+				msg.reply <- err
 
 			case *blockMsg:
 				sm.handleBlockMsg(msg)
@@ -1552,6 +1766,19 @@ func (sm *SyncManager) QueueTx(tx *btcutil.Tx, peer *peerpkg.Peer, done chan str
 	sm.msgChan <- &txMsg{tx: tx, peer: peer, reply: done}
 }
 
+// QueueTx adds the passed transaction message and peer to the block handling
+// queue. Responds to the done channel argument after the tx message is
+// processed.
+func (sm *SyncManager) QueueMixMsg(msg mixing.Message, peer *peerpkg.Peer, done chan error) {
+	// Don't accept more transactions if we're shutting down.
+	if atomic.LoadInt32(&sm.shutdown) != 0 {
+		done <- fmt.Errorf("SyncManager is shutting down")
+		return
+	}
+
+	sm.msgChan <- &mixMsg{msg: msg, peer: peer, reply: done}
+}
+
 // QueueBlock adds the passed block message and peer to the block handling
 // queue. Responds to the done channel argument after the block message is
 // processed.
@@ -1644,6 +1871,48 @@ func (sm *SyncManager) SyncPeerID() int32 {
 	return <-reply
 }
 
+func (sm *SyncManager) RequestMixMsgsFromPeer(peer *peerpkg.Peer, mixHashes []chainhash.Hash) error {
+	state, exists := sm.peerStates[peer]
+	if !exists {
+		log.Warnf("Received inv message from unknown peer %s", peer)
+		return fmt.Errorf("unknown peer")
+	}
+
+	msgResp := wire.NewMsgGetData()
+
+	for i := range mixHashes {
+		// If we've already requested this mix message, skip it.
+		mh := &mixHashes[i]
+		_, alreadyReqP := state.requestedMixMsgs[*mh]
+		_, alreadyReqB := sm.requestedMixMsgs[*mh]
+
+		if alreadyReqP || alreadyReqB {
+			continue
+		}
+
+		// Skip the message when it is already known.
+		if sm.mixPool.HaveMessage(mh) {
+			continue
+		}
+
+		err := msgResp.AddInvVect(wire.NewInvVect(wire.InvTypeMix, mh))
+		if err != nil {
+			return fmt.Errorf("unexpected error encountered building request "+
+				"for inv vect mix hash %v: %v",
+				mh, err.Error())
+		}
+
+		state.requestedMixMsgs[*mh] = struct{}{}
+		sm.requestedMixMsgs[*mh] = struct{}{}
+	}
+
+	if len(msgResp.InvList) > 0 {
+		peer.QueueMessage(msgResp, nil)
+	}
+
+	return nil
+}
+
 // ProcessBlock makes use of ProcessBlock on an internal instance of a block
 // chain.
 func (sm *SyncManager) ProcessBlock(block *btcutil.Block, flags blockchain.BehaviorFlags) (bool, error) {
@@ -1675,19 +1944,22 @@ func (sm *SyncManager) Pause() chan<- struct{} {
 // block, tx, and inv updates.
 func New(config *Config) (*SyncManager, error) {
 	sm := SyncManager{
-		peerNotifier:    config.PeerNotifier,
-		chain:           config.Chain,
-		txMemPool:       config.TxMemPool,
-		chainParams:     config.ChainParams,
-		rejectedTxns:    make(map[chainhash.Hash]struct{}),
-		requestedTxns:   make(map[chainhash.Hash]struct{}),
-		requestedBlocks: make(map[chainhash.Hash]struct{}),
-		peerStates:      make(map[*peerpkg.Peer]*peerSyncState),
-		progressLogger:  newBlockProgressLogger("Processed", log),
-		msgChan:         make(chan interface{}, config.MaxPeers*3),
-		headerList:      list.New(),
-		quit:            make(chan struct{}),
-		feeEstimator:    config.FeeEstimator,
+		peerNotifier:     config.PeerNotifier,
+		chain:            config.Chain,
+		txMemPool:        config.TxMemPool,
+		mixPool:          config.MixPool,
+		chainParams:      config.ChainParams,
+		rejectedTxns:     make(map[chainhash.Hash]struct{}),
+		rejectedMixMsgs:  apbf.NewFilter(maxRejectedMixMsgs, rejectedMixMsgsFPRate),
+		requestedTxns:    make(map[chainhash.Hash]struct{}),
+		requestedBlocks:  make(map[chainhash.Hash]struct{}),
+		requestedMixMsgs: make(map[chainhash.Hash]struct{}),
+		peerStates:       make(map[*peerpkg.Peer]*peerSyncState),
+		progressLogger:   newBlockProgressLogger("Processed", log),
+		msgChan:          make(chan interface{}, config.MaxPeers*3),
+		headerList:       list.New(),
+		quit:             make(chan struct{}),
+		feeEstimator:     config.FeeEstimator,
 	}
 
 	best := sm.chain.BestSnapshot()
