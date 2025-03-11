@@ -77,6 +77,23 @@ func formatLockTime(lockTime uint32) string {
 	return time.Unix(int64(lockTime), 0).String()
 }
 
+type mixMessage interface {
+	Hash() chainhash.Hash
+	Pub() []byte
+	Sid() []byte    // PR returns nil
+	GetRun() uint32 // PR returns 0
+}
+
+// mixMessageSummary returns short summary of a mixing message as a
+// human-readable string.
+func mixMessageSummary(msg mixMessage) string {
+	if pr, ok := msg.(*wire.MsgMixPairReq); ok {
+		return fmt.Sprintf("identity %x, hash %v", pr.Pub(), pr.Hash())
+	}
+	return fmt.Sprintf("identity %x, hash %v, session %x, run %d",
+		msg.Pub(), msg.Hash(), msg.Sid(), msg.GetRun())
+}
+
 // invSummary returns an inventory message as a human-readable string.
 func invSummary(invList []*wire.InvVect) string {
 	// No inventory.
@@ -99,6 +116,8 @@ func invSummary(invList []*wire.InvVect) string {
 			return fmt.Sprintf("witness tx %s", iv.Hash)
 		case wire.InvTypeTx:
 			return fmt.Sprintf("tx %s", iv.Hash)
+		case wire.InvTypeMix:
+			return fmt.Sprintf("mix message %s", iv.Hash)
 		}
 
 		return fmt.Sprintf("unknown (%d) %s", uint32(iv.Type), iv.Hash)
@@ -180,6 +199,23 @@ func messageSummary(msg wire.Message) string {
 		header := &msg.Header
 		return fmt.Sprintf("hash %s, ver %d, %d tx, %s", msg.BlockHash(),
 			header.Version, len(msg.Transactions), header.Timestamp)
+
+	case *wire.MsgMixPairReq:
+		return mixMessageSummary(msg)
+	case *wire.MsgMixKeyExchange:
+		return mixMessageSummary(msg)
+	case *wire.MsgMixCiphertexts:
+		return mixMessageSummary(msg)
+	case *wire.MsgMixSlotReserve:
+		return mixMessageSummary(msg)
+	case *wire.MsgMixDCNet:
+		return mixMessageSummary(msg)
+	case *wire.MsgMixConfirm:
+		return mixMessageSummary(msg)
+	case *wire.MsgMixFactoredPoly:
+		return mixMessageSummary(msg)
+	case *wire.MsgMixSecrets:
+		return mixMessageSummary(msg)
 
 	case *wire.MsgInv:
 		return invSummary(msg.InvList)

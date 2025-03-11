@@ -148,6 +148,30 @@ func makeEmptyMessage(command string) (Message, error) {
 	case CmdTx:
 		msg = &MsgTx{}
 
+	case CmdMixPairReq:
+		msg = &MsgMixPairReq{}
+
+	case CmdMixKeyExchange:
+		msg = &MsgMixKeyExchange{}
+
+	case CmdMixCiphertexts:
+		msg = &MsgMixCiphertexts{}
+
+	case CmdMixSlotReserve:
+		msg = &MsgMixSlotReserve{}
+
+	case CmdMixFactoredPoly:
+		msg = &MsgMixFactoredPoly{}
+
+	case CmdMixDCNet:
+		msg = &MsgMixDCNet{}
+
+	case CmdMixConfirm:
+		msg = &MsgMixConfirm{}
+
+	case CmdMixSecrets:
+		msg = &MsgMixSecrets{}
+
 	case CmdPing:
 		msg = &MsgPing{}
 

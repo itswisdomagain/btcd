@@ -8,11 +8,11 @@ import (
 	"crypto/subtle"
 	"errors"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/txsort"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/mixing/utxoproof"
 )
 
@@ -37,7 +37,7 @@ type identity = [33]byte
 // CoinJoin tracks the in-progress coinjoin transaction for a single peer as
 // the mixing protocol is performed.
 type CoinJoin struct {
-	txHash chainhash.Hash
+	initialTxHash chainhash.Hash
 
 	genFunc GenFunc
 
@@ -84,7 +84,7 @@ func NewCoinJoin(gen GenFunc, change *wire.TxOut, mixValue int64, prExpiry uint3
 // retained by the CoinJoin structure and may be zerod from memory after
 // AddInput returns.
 func (c *CoinJoin) AddInput(input *wire.TxIn, value int64, prevScript []byte, prevScriptVersion uint16,
-	privKey *secp256k1.PrivateKey) error {
+	privKey *btcec.PrivateKey) error {
 
 	pub := privKey.PubKey().SerializeCompressed()
 	keyPair := utxoproof.Secp256k1KeyPair{
@@ -203,14 +203,17 @@ func (c *CoinJoin) sort() {
 		}
 	}
 
-	c.txHash = c.tx.TxHash()
+	// The tx hash changes for each input signature added to the tx. The correct
+	// hash for the final coinjoin is the tx hash gotten after all inputs are
+	// signed.
+	c.initialTxHash = c.tx.TxHash()
 }
 
 // constantTimeOutputSearch searches for the output indices of mixed outputs to
 // verify inclusion in a coinjoin.  It is constant time such that, for each
 // searched script, all outputs with equal value, script versions, and script
 // lengths matching the searched output are checked in constant time.
-func constantTimeOutputSearch(tx *wire.MsgTx, value int64, scriptVer uint16, scripts [][]byte) ([]int, error) {
+func constantTimeOutputSearch(tx *wire.MsgTx, value int64 /*scriptVer uint16,*/, scripts [][]byte) ([]int, error) {
 	var scan []int
 	for i, out := range tx.TxOut {
 		if out.Value != value {
@@ -246,7 +249,7 @@ func constantTimeOutputSearch(tx *wire.MsgTx, value int64, scriptVer uint16, scr
 // signs inputs being contributed by the peer.  returns errMissingGen to
 // trigger blame assignment if a message is not found.
 func (c *CoinJoin) confirm(wallet Wallet) error {
-	genIndices, err := constantTimeOutputSearch(c.tx, c.mixValue, 0, c.genScripts)
+	genIndices, err := constantTimeOutputSearch(c.tx, c.mixValue, c.genScripts)
 	if err != nil {
 		return err
 	}
@@ -270,7 +273,7 @@ func (c *CoinJoin) confirm(wallet Wallet) error {
 // Peers must be removed in the next run if mergeSignatures returns an error.
 func (c *CoinJoin) mergeSignatures(cm *wire.MsgMixConfirm) error {
 	// Signatures may only be used if an identical transaction was signed.
-	if cm.Mix.TxHash() != c.txHash {
+	if txscript.ShallowTxCopyNoSigs(&cm.Mix).TxHash() != c.initialTxHash {
 		return errSignedWrongTx
 	}
 

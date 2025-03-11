@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/mempool"
 	"github.com/btcsuite/btcd/mining"
 	"github.com/btcsuite/btcd/mining/cpuminer"
+	"github.com/btcsuite/btcd/mixing/mixpool"
 	"github.com/btcsuite/btcd/netsync"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/txscript"
@@ -63,6 +64,7 @@ var (
 	discLog = backendLog.Logger("DISC")
 	indxLog = backendLog.Logger("INDX")
 	minrLog = backendLog.Logger("MINR")
+	mixpLog = backendLog.Logger("MIXP")
 	peerLog = backendLog.Logger("PEER")
 	rpcsLog = backendLog.Logger("RPCS")
 	scrpLog = backendLog.Logger("SCRP")
@@ -79,6 +81,7 @@ func init() {
 	blockchain.UseLogger(chanLog)
 	indexers.UseLogger(indxLog)
 	mining.UseLogger(minrLog)
+	mixpool.UseLogger(mixpLog)
 	cpuminer.UseLogger(minrLog)
 	peer.UseLogger(peerLog)
 	txscript.UseLogger(scrpLog)
@@ -97,6 +100,7 @@ var subsystemLoggers = map[string]btclog.Logger{
 	"DISC": discLog,
 	"INDX": indxLog,
 	"MINR": minrLog,
+	"MIXP": mixpLog,
 	"PEER": peerLog,
 	"RPCS": rpcsLog,
 	"SCRP": scrpLog,

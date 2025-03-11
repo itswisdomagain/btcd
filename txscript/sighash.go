@@ -68,6 +68,16 @@ func shallowCopyTx(tx *wire.MsgTx) wire.MsgTx {
 	return txCopy
 }
 
+// ShallowTxCopyNoSigs creates a shallow copy of the transaction without any
+// input signature script, for use when calculating the transaction hash.
+func ShallowTxCopyNoSigs(tx *wire.MsgTx) *wire.MsgTx {
+	txCopy := shallowCopyTx(tx)
+	for i := range txCopy.TxIn {
+		txCopy.TxIn[i].SignatureScript = nil
+	}
+	return &txCopy
+}
+
 // CalcSignatureHash will, given a script and hash type for the current script
 // engine instance, calculate the signature hash to be used for signing and
 // verification.

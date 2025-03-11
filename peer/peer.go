@@ -10,6 +10,7 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"math/rand"
 	"net"
@@ -25,12 +26,13 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/go-socks/socks"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/lru"
 )
 
 const (
 	// MaxProtocolVersion is the max protocol version the peer supports.
-	MaxProtocolVersion = wire.AddrV2Version
+	MaxProtocolVersion = wire.MixVersion
 
 	// DefaultTrickleInterval is the min time between attempts to send an
 	// inv message to a peer.
@@ -50,8 +52,6 @@ const (
 	// maxKnownInventory is the maximum number of items to keep in the known
 	// inventory cache.
 	maxKnownInventory = 1000
-
-	invLRUSize = 5000
 
 	// pingInterval is the interval of time to wait in between sending ping
 	// messages.
@@ -449,6 +449,11 @@ type Peer struct {
 	disconnect    int32
 
 	conn net.Conn
+
+	// blake256Hasher is the hash.Hash object that is used by readMessage
+	// to calculate the hash of read mixing messages.  Every peer's hasher
+	// is a distinct object and does not require locking.
+	blake256Hasher hash.Hash
 
 	// These fields are set at creation time and never modified, so they are
 	// safe to read from concurrently without a mutex.
@@ -1079,11 +1084,29 @@ func (p *Peer) handlePongMsg(msg *wire.MsgPong) {
 	}
 }
 
+// hashable is a wire message which can be hashed but requires the hash to be
+// calculated upfront after creating any message or (importantly for peer)
+// deserializing a message off the wire.
+type hashable interface {
+	wire.Message
+	WriteHash(hash.Hash)
+	Hash() chainhash.Hash
+}
+
 // readMessage reads the next bitcoin message from the peer with logging.
 func (p *Peer) readMessage(encoding wire.MessageEncoding) (wire.Message, []byte, error) {
 	n, msg, buf, err := wire.ReadMessageWithEncodingN(p.conn,
 		p.ProtocolVersion(), p.cfg.ChainParams.Net, encoding)
 	atomic.AddUint64(&p.bytesReceived, uint64(n))
+
+	// Calculate and store the message hash of any mixing message
+	// immediately after deserializing it.
+	if err == nil {
+		if msg, ok := msg.(hashable); ok {
+			msg.WriteHash(p.blake256Hasher)
+		}
+	}
+
 	if p.cfg.Listeners.OnRead != nil {
 		p.cfg.Listeners.OnRead(p, n, msg, err)
 	}
@@ -1466,6 +1489,8 @@ out:
 				idleTimer.Reset(idleTimeout)
 				continue
 			}
+
+			// panic(err)
 
 			// Only log the error and send reject message if the
 			// local peer is not forcibly disconnecting and the
@@ -2475,6 +2500,7 @@ func newPeerBase(origCfg *Config, inbound bool) *Peer {
 	}
 
 	p := Peer{
+		blake256Hasher:  blake256.New(),
 		inbound:         inbound,
 		wireEncoding:    wire.BaseEncoding,
 		knownInventory:  lru.NewCache(maxKnownInventory),
