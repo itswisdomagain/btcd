@@ -707,6 +707,12 @@ func (sp *serverPeer) OnInv(_ *peer.Peer, msg *wire.MsgInv) {
 			}
 			continue
 		}
+		if invVect.Type == wire.InvTypeMix {
+			peerLog.Infof("Peer %v is announcing mix messages -- disconnecting",
+				sp)
+			sp.Disconnect()
+			return
+		}
 		err := newInv.AddInvVect(invVect)
 		if err != nil {
 			peerLog.Errorf("Failed to add inventory vector: %v", err)
@@ -1519,7 +1525,7 @@ func (sp *serverPeer) OnNotFound(p *peer.Peer, msg *wire.MsgNotFound) {
 		return
 	}
 
-	var numBlocks, numTxns uint32
+	var numBlocks, numTxns, numMixMsgs uint32
 	for _, inv := range msg.InvList {
 		switch inv.Type {
 		case wire.InvTypeBlock:
@@ -1530,6 +1536,8 @@ func (sp *serverPeer) OnNotFound(p *peer.Peer, msg *wire.MsgNotFound) {
 			numTxns++
 		case wire.InvTypeWitnessTx:
 			numTxns++
+		case wire.InvTypeMix:
+			numMixMsgs++
 		default:
 			peerLog.Debugf("Invalid inv type '%d' in notfound message from %s",
 				inv.Type, sp)
@@ -1548,6 +1556,13 @@ func (sp *serverPeer) OnNotFound(p *peer.Peer, msg *wire.MsgNotFound) {
 		txStr := pickNoun(uint64(numTxns), "transaction", "transactions")
 		reason := fmt.Sprintf("%d %v not found", numTxns, txStr)
 		if sp.addBanScore(0, 10*numTxns, reason) {
+			return
+		}
+	}
+	if numMixMsgs > 0 {
+		mixStr := pickNoun(uint64(numMixMsgs), "mix message", "mix messages")
+		reason := fmt.Sprintf("%d %v not found", numMixMsgs, mixStr)
+		if sp.addBanScore(0, 10*numMixMsgs, reason) {
 			return
 		}
 	}
@@ -2063,6 +2078,14 @@ func (s *server) handleRelayInvMsg(state *peerState, msg relayMsg) {
 				if !sp.filter.MatchTxAndUpdate(txD.Tx) {
 					return
 				}
+			}
+		}
+
+		if msg.invVect.Type == wire.InvTypeMix {
+			// Don't relay mix message inventory when unsupported
+			// by the negotiated protocol version.
+			if sp.ProtocolVersion() < wire.MixVersion {
+				return
 			}
 		}
 

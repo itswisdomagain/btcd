@@ -991,7 +991,7 @@ func (c *Client) pairSession(ctx context.Context, ps *pairedSessions, prs []*wir
 			go func() {
 				time.Sleep(10 * time.Second)
 				mixedSession.logf("removing mixed session completed "+
-					"with transaction %v", mixedSession.cj.txHash)
+					"with transaction %v", mixedSession.cj.tx.TxHash())
 				c.mixpool.RemoveSession(mixedSession.sid)
 			}()
 		}
@@ -2076,11 +2076,6 @@ func (c *Client) validateMergedCoinjoin(cj *CoinJoin, prs []*wire.MsgMixPairReq,
 	}
 
 	blamedInputs := make(map[wire.OutPoint]struct{})
-	const scriptFlags = txscript.ScriptDiscourageUpgradableNops |
-		txscript.ScriptVerifyCleanStack |
-		txscript.ScriptVerifyCheckLockTimeVerify |
-		txscript.ScriptVerifyCheckSequenceVerify
-	// const scriptVersion = 0
 	for i, in := range cj.tx.TxIn {
 		utxo, ok := utxos[in.PreviousOutPoint]
 		if !ok {
@@ -2092,7 +2087,7 @@ func (c *Client) validateMergedCoinjoin(cj *CoinJoin, prs []*wire.MsgMixPairReq,
 
 		pkscript := prevScriptForUTXO(utxo)
 		engine, err := txscript.NewEngine(pkscript, cj.tx, i,
-			scriptFlags, nil, nil, 0, nil)
+			txscript.StandardVerifyFlags, nil, nil, 0, nil)
 		if err != nil {
 			c.logf("warn: blaming peer for error creating script engine: %v", err)
 			blamedInputs[in.PreviousOutPoint] = struct{}{}

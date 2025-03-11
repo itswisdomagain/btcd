@@ -5,6 +5,7 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -832,6 +833,16 @@ func (msg *MsgTx) Serialize(w io.Writer) error {
 	// serialized according to the new serialization structure defined in
 	// BIP0144.
 	return msg.BtcEncode(w, 0, WitnessEncoding)
+}
+
+func (msg *MsgTx) Hex() string {
+	var txBuf bytes.Buffer
+	txBuf.Grow(msg.SerializeSize())
+	err := msg.Serialize(&txBuf)
+	if err != nil {
+		return err.Error()
+	}
+	return hex.EncodeToString(txBuf.Bytes())
 }
 
 // SerializeNoWitness encodes the transaction to w in an identical manner to
