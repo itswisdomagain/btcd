@@ -163,6 +163,19 @@ type peerState struct {
 	outboundGroups  map[string]int
 }
 
+// makePeerState returns a peer state instance that is used to maintain the
+// state of inbound, persistent, and outbound peers as well as banned peers and
+// outbound groups.
+func makePeerState() peerState {
+	return peerState{
+		inboundPeers:    make(map[int32]*serverPeer),
+		persistentPeers: make(map[int32]*serverPeer),
+		outboundPeers:   make(map[int32]*serverPeer),
+		banned:          make(map[string]time.Time),
+		outboundGroups:  make(map[string]int),
+	}
+}
+
 // Count returns the count of all known peers.
 func (ps *peerState) Count() int {
 	return len(ps.inboundPeers) + len(ps.outboundPeers) +
@@ -208,6 +221,11 @@ type server struct {
 	shutdownSched int32
 	startupTime   int64
 
+	// targetOutbound is the calculated number of target outbound peers to
+	// maintain.  It is set at creation time and never modified afterwards, so
+	// it does not need to be protected for concurrent access.
+	targetOutbound uint32
+
 	chainParams          *chaincfg.Params
 	addrManager          *addrmgr.AddrManager
 	connManager          *connmgr.ConnManager
@@ -220,6 +238,7 @@ type server struct {
 	mixMsgPool           *mixpool.Pool
 	cpuMiner             *cpuminer.CPUMiner
 	modifyRebroadcastInv chan interface{}
+	peerState            peerState
 	newPeers             chan *serverPeer
 	donePeers            chan *serverPeer
 	banPeers             chan *serverPeer
@@ -499,6 +518,35 @@ func (sp *serverPeer) OnVersion(_ *peer.Peer, msg *wire.MsgVersion) *wire.MsgRej
 		reason := fmt.Sprintf("required services %#x not offered",
 			uint64(missingServices))
 		return wire.NewMsgReject(msg.Command(), wire.RejectNonstandard, reason)
+	}
+
+	// Maintain a minimum desired number of outbound peers capable of supporting
+	// p2p mixing.
+	if !isInbound && msg.ProtocolVersion < int32(wire.MixVersion) {
+		var numOutbound, numMixCapableOutbound uint32
+		peerState := &sp.server.peerState
+		peerState.forAllOutboundPeers(func(sp *serverPeer) {
+			if sp.ProtocolVersion() >= wire.MixVersion {
+				numMixCapableOutbound++
+			}
+			numOutbound++
+		})
+
+		const defaultWantMixCapableOutbound uint32 = 3
+		wantMixCapableOutbound := defaultWantMixCapableOutbound
+		if sp.server.targetOutbound < wantMixCapableOutbound {
+			wantMixCapableOutbound = sp.server.targetOutbound
+		}
+		hasMinMixCapableOuts := numMixCapableOutbound >= wantMixCapableOutbound
+		needsMoreMixCapable := !hasMinMixCapableOuts &&
+			numOutbound+wantMixCapableOutbound >= sp.server.targetOutbound
+		if needsMoreMixCapable {
+			srvrLog.Debugf("Rejecting outbound peer %s with protocol version "+
+				"%d in favor of a peer with minimum version %d (have: %d, "+
+				"target: %d)", sp, msg.ProtocolVersion, wire.MixVersion,
+				numMixCapableOutbound, wantMixCapableOutbound)
+			sp.Disconnect()
+		}
 	}
 
 	if !cfg.SimNet && !isInbound {
@@ -2352,14 +2400,6 @@ func (s *server) peerHandler() {
 
 	srvrLog.Tracef("Starting peer handler")
 
-	state := &peerState{
-		inboundPeers:    make(map[int32]*serverPeer),
-		persistentPeers: make(map[int32]*serverPeer),
-		outboundPeers:   make(map[int32]*serverPeer),
-		banned:          make(map[string]time.Time),
-		outboundGroups:  make(map[string]int),
-	}
-
 	if !cfg.DisableDNSSeed {
 		// Add peers discovered through DNS to the address manager.
 		connmgr.SeedFromDNS(activeNetParams.Params, defaultRequiredServices,
@@ -2379,35 +2419,35 @@ out:
 		select {
 		// New peers connected to the server.
 		case p := <-s.newPeers:
-			s.handleAddPeerMsg(state, p)
+			s.handleAddPeerMsg(&s.peerState, p)
 
 		// Disconnected peers.
 		case p := <-s.donePeers:
-			s.handleDonePeerMsg(state, p)
+			s.handleDonePeerMsg(&s.peerState, p)
 
 		// Block accepted in mainchain or orphan, update peer height.
 		case umsg := <-s.peerHeightsUpdate:
-			s.handleUpdatePeerHeights(state, umsg)
+			s.handleUpdatePeerHeights(&s.peerState, umsg)
 
 		// Peer to ban.
 		case p := <-s.banPeers:
-			s.handleBanPeerMsg(state, p)
+			s.handleBanPeerMsg(&s.peerState, p)
 
 		// New inventory to potentially be relayed to other peers.
 		case invMsg := <-s.relayInv:
-			s.handleRelayInvMsg(state, invMsg)
+			s.handleRelayInvMsg(&s.peerState, invMsg)
 
 		// Message to broadcast to all connected peers except those
 		// which are excluded by the message.
 		case bmsg := <-s.broadcast:
-			s.handleBroadcastMsg(state, &bmsg)
+			s.handleBroadcastMsg(&s.peerState, &bmsg)
 
 		case qmsg := <-s.query:
-			s.handleQuery(state, qmsg)
+			s.handleQuery(&s.peerState, qmsg)
 
 		case <-s.quit:
 			// Disconnect all peers on server shutdown.
-			state.forAllPeers(func(sp *serverPeer) {
+			s.peerState.forAllPeers(func(sp *serverPeer) {
 				srvrLog.Tracef("Shutdown peer %s", sp)
 				sp.Disconnect()
 			})
@@ -2919,8 +2959,10 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 	}
 
 	s := server{
+		targetOutbound:       defaultTargetOutbound,
 		chainParams:          chainParams,
 		addrManager:          amgr,
+		peerState:            makePeerState(),
 		newPeers:             make(chan *serverPeer, cfg.MaxPeers),
 		donePeers:            make(chan *serverPeer, cfg.MaxPeers),
 		banPeers:             make(chan *serverPeer, cfg.MaxPeers),
@@ -3157,15 +3199,14 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 	}
 
 	// Create a connection manager.
-	targetOutbound := defaultTargetOutbound
-	if cfg.MaxPeers < targetOutbound {
-		targetOutbound = cfg.MaxPeers
+	if uint32(cfg.MaxPeers) < s.targetOutbound {
+		s.targetOutbound = uint32(cfg.MaxPeers)
 	}
 	cmgr, err := connmgr.New(&connmgr.Config{
 		Listeners:      listeners,
 		OnAccept:       s.inboundPeerConnected,
 		RetryDuration:  connectionRetryInterval,
-		TargetOutbound: uint32(targetOutbound),
+		TargetOutbound: s.targetOutbound,
 		Dial:           btcdDial,
 		OnConnection:   s.outboundPeerConnected,
 		GetNewAddress:  newAddressFunc,
