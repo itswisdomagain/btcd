@@ -29,7 +29,7 @@ type MsgMixDCNet struct {
 
 // BtcDecode decodes r using the Decred protocol encoding into the receiver.
 // This is part of the Message interface implementation.
-func (msg *MsgMixDCNet) BtcDecode(r io.Reader, pver uint32, enc MessageEncoding) error {
+func (msg *MsgMixDCNet) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding) error {
 	const op = "MsgMixDCNet.BtcDecode"
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
@@ -74,7 +74,7 @@ func (msg *MsgMixDCNet) BtcDecode(r io.Reader, pver uint32, enc MessageEncoding)
 
 // BtcEncode encodes the receiver to w using the Decred protocol encoding.
 // This is part of the Message interface implementation.
-func (msg *MsgMixDCNet) BtcEncode(w io.Writer, pver uint32, enc MessageEncoding) error {
+func (msg *MsgMixDCNet) BtcEncode(w io.Writer, pver uint32, _ MessageEncoding) error {
 	const op = "MsgMixDCNet.BtcEncode"
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
