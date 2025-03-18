@@ -30,14 +30,11 @@ type MsgMixConfirm struct {
 	// message for convenience and performance, but is never automatically
 	// set during creation or deserialization.
 	hash chainhash.Hash
-
-	// Required later.
-	enc MessageEncoding
 }
 
 // BtcDecode decodes r using the Decred protocol encoding into the receiver.
 // This is part of the Message interface implementation.
-func (msg *MsgMixConfirm) BtcDecode(r io.Reader, pver uint32, enc MessageEncoding) error {
+func (msg *MsgMixConfirm) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding) error {
 	const op = "MsgMixConfirm.BtcDecode"
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
@@ -51,11 +48,10 @@ func (msg *MsgMixConfirm) BtcDecode(r io.Reader, pver uint32, enc MessageEncodin
 		return err
 	}
 
-	err = msg.Mix.BtcDecode(r, pver, enc)
+	err = msg.Mix.BtcDecode(r, pver, BaseEncoding)
 	if err != nil {
 		return err
 	}
-	msg.enc = enc
 
 	count, err := ReadVarInt(r, pver)
 	if err != nil {
@@ -149,7 +145,7 @@ func (msg *MsgMixConfirm) writeMessageNoSignature(op string, w io.Writer, pver u
 		return err
 	}
 
-	err = msg.Mix.BtcEncode(w, pver, msg.enc)
+	err = msg.Mix.BtcEncode(w, pver, BaseEncoding)
 	if err != nil {
 		return err
 	}

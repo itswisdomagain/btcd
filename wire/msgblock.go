@@ -26,6 +26,10 @@ const MaxBlocksPerMsg = 500
 // After Segregated Witness, the max block payload has been raised to 4MB.
 const MaxBlockPayload = 4000000
 
+// MaxBlockPayloadV3 is the maximum bytes a block message can be in bytes as of
+// version 3 of the protocol.
+const MaxBlockPayloadV3 = 1000000 // Not actually 1MB which would be 1024 * 1024
+
 // maxTxPerBlock is the maximum number of transactions that could
 // possibly fit into a block.
 const maxTxPerBlock = (MaxBlockPayload / minTxPayload) + 1
