@@ -11,7 +11,6 @@ import (
 	"io"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	dcrwire "github.com/decred/dcrd/wire"
 )
 
 const (
@@ -115,7 +114,7 @@ func (msg *MsgMixPairReq) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg) // ErrMsgInvalidForPVer,
+		return messageError(op, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.Expiry,
@@ -126,10 +125,10 @@ func (msg *MsgMixPairReq) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 
 	if msg.MixAmount < 0 {
 		msg := "mixing pair request contains negative mixed amount"
-		return messageError(op, msg) //, ErrInvalidMsg
+		return messageError(op, msg)
 	}
 
-	sc, err := dcrwire.ReadAsciiVarString(r, pver, MaxMixPairReqScriptClassLen)
+	sc, err := ReadAsciiVarString(r, pver, MaxMixPairReqScriptClassLen)
 	if err != nil {
 		return err
 	}
