@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"hash"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
-	"github.com/decred/dcrd/wire"
 )
 
 const tag = "decred-mix-signature"
