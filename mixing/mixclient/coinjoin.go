@@ -66,7 +66,7 @@ type GenFunc func(count uint32) (wire.MixVect, error)
 func NewCoinJoin(gen GenFunc, change *wire.TxOut, mixValue int64, prExpiry uint32, mcount uint32) *CoinJoin {
 	return &CoinJoin{
 		genFunc:     gen,
-		tx:          wire.NewMsgTx(wire.TxVersion), // TODO!: Use 0?
+		tx:          wire.NewMsgTx(wire.TxVersion),
 		change:      change,
 		peerPRs:     make(map[identity]*wire.MsgMixPairReq),
 		contributed: make(map[wire.OutPoint]identity),
