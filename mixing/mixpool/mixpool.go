@@ -26,7 +26,7 @@ import (
 )
 
 const minconf = 1
-const feeRate = 0.0001e8
+const feeRate = 1e3
 const earlyKEDuration = 5 * time.Second
 
 type idPubKey = [33]byte
@@ -1540,10 +1540,9 @@ func isDustAmount(amount int64, scriptSize int, relayFeePerKb int64) bool {
 	// calculated using the serialize size of the output plus the serial
 	// size of a transaction input which redeems it.  The output is assumed
 	// to be compressed P2PKH as this is the most common script type.  Use
-	// the average size of a compressed P2PKH redeem input (165) rather than
+	// the average size of a compressed P2PKH redeem input (148) rather than
 	// the largest possible (txsizes.RedeemP2PKHInputSize).
-	totalSize := 8 + 2 + wire.VarIntSerializeSize(uint64(scriptSize)) +
-		scriptSize + 165
+	totalSize := estimateOutputSize(scriptSize) + 148
 
 	// Dust is defined as an output value where the total cost to the network
 	// (output size + input size) is greater than 1/3 of the relay fee.
@@ -1597,8 +1596,8 @@ func estimateP2PKHv0SerializeSize(inputs, outputs int, hasChange bool) int {
 		outputs++
 	}
 
-	// 12 additional bytes are for version, locktime and expiry.
-	return 12 + (2 * wire.VarIntSerializeSize(uint64(inputs))) +
+	// 8 additional bytes are for version and locktime
+	return 8 + wire.VarIntSerializeSize(uint64(inputs)) +
 		wire.VarIntSerializeSize(uint64(outputs)) +
 		txInsSize + txOutsSize + changeSize
 }
@@ -1608,10 +1607,10 @@ func estimateP2PKHv0SerializeSize(inputs, outputs int, hasChange bool) int {
 func estimateInputSize(scriptSize int) int {
 	return 32 + // previous tx
 		4 + // output index
-		1 + // tree
-		8 + // amount
-		4 + // block height
-		4 + // block index
+		// 1 + // tree
+		// 8 + // amount
+		// 4 + // block height
+		// 4 + // block index
 		wire.VarIntSerializeSize(uint64(scriptSize)) + // size of script
 		scriptSize + // script itself
 		4 // sequence
@@ -1621,7 +1620,7 @@ func estimateInputSize(scriptSize int) int {
 // output.
 func estimateOutputSize(scriptSize int) int {
 	return 8 + // previous tx
-		2 + // version
+		// 2 + // version
 		wire.VarIntSerializeSize(uint64(scriptSize)) + // size of script
 		scriptSize // script itself
 }
