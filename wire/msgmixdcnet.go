@@ -34,7 +34,7 @@ func (msg *MsgMixDCNet) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding) e
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.SessionID,
@@ -57,7 +57,7 @@ func (msg *MsgMixDCNet) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding) e
 	if count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	seen := make([]chainhash.Hash, count)
@@ -79,7 +79,7 @@ func (msg *MsgMixDCNet) BtcEncode(w io.Writer, pver uint32, _ MessageEncoding) e
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := writeElement(w, &msg.Signature)
@@ -133,17 +133,17 @@ func (msg *MsgMixDCNet) writeMessageNoSignature(op string, w io.Writer, pver uin
 	mcount := len(msg.DCNet)
 	if !hashing && mcount == 0 {
 		msg := fmt.Sprintf("too few mixed messages [%v]", mcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if !hashing && mcount > MaxMixMcount {
 		msg := fmt.Sprintf("too many total mixed messages [%v]", mcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	srcount := len(msg.SeenSlotReserves)
 	if !hashing && srcount > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			srcount, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	err := writeElements(w, &msg.Identity, &msg.SessionID, msg.Run)
@@ -221,12 +221,12 @@ func readMixVects(op string, r io.Reader, pver uint32, vecs *[]MixVect) error {
 
 	if x > MaxMixMcount || y > MaxMixMcount {
 		msg := "DC-net mix vector dimensions are too large for maximum message count"
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if msize != MixMsgSize {
 		msg := fmt.Sprintf("mixed message length must be %d [got: %d]",
 			MixMsgSize, msize)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 
 	// Read messages

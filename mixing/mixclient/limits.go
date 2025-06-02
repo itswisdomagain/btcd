@@ -24,10 +24,10 @@ var estimatedRedeemP2PKHv0InputSize = estimateInputSize(redeemP2PKHv0SigScriptSi
 func estimateInputSize(scriptSize int) int {
 	return 32 + // previous tx
 		4 + // output index
-		1 + // tree
-		8 + // amount
-		4 + // block height
-		4 + // block index
+		// 1 + // tree
+		// 8 + // amount
+		// 4 + // block height
+		// 4 + // block index
 		wire.VarIntSerializeSize(uint64(scriptSize)) + // size of script
 		scriptSize + // script itself
 		4 // sequence
@@ -37,7 +37,7 @@ func estimateInputSize(scriptSize int) int {
 // output.
 func estimateOutputSize(scriptSize int) int {
 	return 8 + // previous tx
-		2 + // version
+		// 2 + // version
 		wire.VarIntSerializeSize(uint64(scriptSize)) + // size of script
 		scriptSize // script itself
 }
@@ -51,8 +51,8 @@ func estimateP2PKHv0SerializeSize(inputs int, outputScriptSizes []int) int {
 		txOutsSize += estimateOutputSize(sz)
 	}
 
-	// 12 additional bytes are for version, locktime and expiry.
-	return 12 + (2 * wire.VarIntSerializeSize(uint64(inputs))) +
+	// 8 additional bytes are for version and locktime.
+	return 8 + wire.VarIntSerializeSize(uint64(inputs)) +
 		wire.VarIntSerializeSize(uint64(len(outputScriptSizes))) +
 		txInsSize + txOutsSize
 }

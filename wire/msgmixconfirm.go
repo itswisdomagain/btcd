@@ -39,7 +39,7 @@ func (msg *MsgMixConfirm) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.SessionID,
@@ -60,7 +60,7 @@ func (msg *MsgMixConfirm) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	seen := make([]chainhash.Hash, count)
@@ -82,7 +82,7 @@ func (msg *MsgMixConfirm) BtcEncode(w io.Writer, pver uint32, _ MessageEncoding)
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := writeElement(w, &msg.Signature)
@@ -137,7 +137,7 @@ func (msg *MsgMixConfirm) writeMessageNoSignature(op string, w io.Writer, pver u
 	if !hashing && count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	err := writeElements(w, &msg.Identity, &msg.SessionID, msg.Run)
@@ -186,7 +186,7 @@ func (msg *MsgMixConfirm) MaxPayloadLength(pver uint32) uint32 {
 	}
 
 	// See tests for this calculation.
-	return 1016520
+	return 4016520
 }
 
 // Pub returns the message sender's public key identity.

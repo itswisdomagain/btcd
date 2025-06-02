@@ -20,7 +20,7 @@ func deriveSessionID(seenPRs []chainhash.Hash, epoch uint64) [32]byte {
 	h := blake256.New()
 	buf := make([]byte, 8)
 
-	h.Write([]byte("decred-mix-session"))
+	h.Write([]byte("bitcoin-mix-session"))
 
 	binary.BigEndian.PutUint64(buf, epoch)
 	h.Write(buf)

@@ -35,7 +35,7 @@ func (msg *MsgMixFactoredPoly) BtcDecode(r io.Reader, pver uint32, _ MessageEnco
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.SessionID,
@@ -51,7 +51,7 @@ func (msg *MsgMixFactoredPoly) BtcDecode(r io.Reader, pver uint32, _ MessageEnco
 	if count > MaxMixMcount {
 		msg := fmt.Sprintf("too many roots in message [count %v, max %v]",
 			count, MaxMixMcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 
 	roots := make([][]byte, count)
@@ -71,7 +71,7 @@ func (msg *MsgMixFactoredPoly) BtcDecode(r io.Reader, pver uint32, _ MessageEnco
 	if count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	seen := make([]chainhash.Hash, count)
@@ -93,7 +93,7 @@ func (msg *MsgMixFactoredPoly) BtcEncode(w io.Writer, pver uint32, _ MessageEnco
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := writeElement(w, &msg.Signature)
@@ -148,19 +148,19 @@ func (msg *MsgMixFactoredPoly) writeMessageNoSignature(op string, w io.Writer, p
 	if !hashing && count > MaxMixMcount {
 		msg := fmt.Sprintf("too many solutions to factored polynomial [count %v, max %v]",
 			count, MaxMixMcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	for _, root := range msg.Roots {
 		if !hashing && len(root) > MaxMixFieldValLen {
 			msg := "root exceeds bytes necessary to represent number in field"
-			return messageError(op, msg)
+			return messageErrorWithCode(op, ErrInvalidMsg, msg)
 		}
 	}
 	srcount := len(msg.SeenSlotReserves)
 	if !hashing && srcount > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			srcount, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	err := writeElements(w, &msg.Identity, &msg.SessionID, msg.Run)

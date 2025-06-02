@@ -15,7 +15,7 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 )
 
-const tag = "decred-mix-signature"
+const tag = "bitcoin-mix-signature"
 
 // Signed is an interface describing a signed mixing message.
 type Signed interface {

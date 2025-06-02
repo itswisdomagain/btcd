@@ -1345,7 +1345,6 @@ func (p *Pool) checkUTXOs(pr *wire.MsgMixPairReq, curHeight int64) error {
 		switch {
 		case utxo.Opcode == 0:
 			extractPubKeyHash160 = txscript.ExtractPubKeyHash
-		// TODO!: Consider removing utxo.Opcode, doesn't seem relevant for btc.
 		// case utxo.Opcode == txscript.OP_SSGEN:
 		// 	extractPubKeyHash160 = stdscript.ExtractStakeGenPubKeyHashV0
 		// case utxo.Opcode == txscript.OP_SSRTX:
