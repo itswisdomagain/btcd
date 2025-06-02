@@ -26,7 +26,7 @@ const (
 
 	// MaxMixPairReqUTXOScriptLen is the maximum length allowed for the
 	// unhashed P2SH script of a UTXO ownership proof.
-	MaxMixPairReqUTXOScriptLen = 16384 // txscript.MaxScriptSize
+	MaxMixPairReqUTXOScriptLen = 10000 // txscript.MaxScriptSize
 
 	// MaxMixPairReqUTXOPubKeyLen is the maximum length allowed for the
 	// pubkey of a UTXO ownership proof.
@@ -49,7 +49,7 @@ type MixPairReqUTXO struct {
 	Script    []byte // Only used for P2SH
 	PubKey    []byte
 	Signature []byte
-	Opcode    byte
+	Opcode    byte // N/A (always 0) for btc utxos. Consider removing this field.
 }
 
 // MsgMixPairReq implements the Message interface and represents a mixing pair
@@ -114,7 +114,7 @@ func (msg *MsgMixPairReq) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.Expiry,
@@ -125,7 +125,7 @@ func (msg *MsgMixPairReq) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 
 	if msg.MixAmount < 0 {
 		msg := "mixing pair request contains negative mixed amount"
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 
 	sc, err := ReadAsciiVarString(r, pver, MaxMixPairReqScriptClassLen)
@@ -142,7 +142,7 @@ func (msg *MsgMixPairReq) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 
 	if msg.InputValue < 0 {
 		msg := "mixing pair request contains negative input value"
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 
 	count, err := ReadVarInt(r, pver)
@@ -152,7 +152,7 @@ func (msg *MsgMixPairReq) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if count > MaxMixPairReqUTXOs {
 		msg := fmt.Sprintf("too many UTXOs in message [count %v, max %v]",
 			count, MaxMixPairReqUTXOs)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyMixPairReqUTXOs, msg)
 	}
 	utxos := make([]MixPairReqUTXO, count)
 	for i := range utxos {
@@ -209,7 +209,7 @@ func (msg *MsgMixPairReq) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 		msg.Change = change
 	default:
 		msg := "invalid change TxOut encoding"
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 
 	return readElements(r, &msg.Flags, &msg.PairingFlags)
@@ -222,7 +222,7 @@ func (msg *MsgMixPairReq) BtcEncode(w io.Writer, pver uint32, _ MessageEncoding)
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := writeElement(w, &msg.Signature)
@@ -280,18 +280,18 @@ func (msg *MsgMixPairReq) writeMessageNoSignature(op string, w io.Writer, pver u
 		msg := fmt.Sprintf("script class length is too long "+
 			"[len %d, max %d]", lenScriptClass,
 			MaxMixPairReqScriptClassLen)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMixPairReqScriptClassTooLong, msg)
 	}
 	if !isStrictAscii(msg.ScriptClass) {
 		msg := "script class string is not strict ASCII"
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMalformedStrictString, msg)
 	}
 
 	// Limit to max UTXOs per message.
 	count := len(msg.UTXOs)
 	if !hashing && count > MaxMixPairReqUTXOs {
 		msg := fmt.Sprintf("too many UTXOs in message [%v]", count)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyMixPairReqUTXOs, msg)
 	}
 
 	err := writeElements(w, &msg.Identity, msg.Expiry, msg.MixAmount)
@@ -325,7 +325,7 @@ func (msg *MsgMixPairReq) writeMessageNoSignature(op string, w io.Writer, pver u
 		if l := len(utxo.Script); !hashing && l > MaxMixPairReqUTXOScriptLen {
 			msg := fmt.Sprintf("UTXO script is too long [len %v, max %v]",
 				l, MaxMixPairReqUTXOScriptLen)
-			return messageError(op, msg)
+			return messageErrorWithCode(op, ErrVarBytesTooLong, msg)
 		}
 		err = WriteVarBytes(w, pver, utxo.Script)
 		if err != nil {
@@ -335,7 +335,7 @@ func (msg *MsgMixPairReq) writeMessageNoSignature(op string, w io.Writer, pver u
 		if l := len(utxo.PubKey); !hashing && l > MaxMixPairReqUTXOPubKeyLen {
 			msg := fmt.Sprintf("UTXO public key is too long [len %v, max %v]",
 				l, MaxMixPairReqUTXOPubKeyLen)
-			return messageError(op, msg)
+			return messageErrorWithCode(op, ErrVarBytesTooLong, msg)
 		}
 		err = WriteVarBytes(w, pver, utxo.PubKey)
 		if err != nil {
@@ -345,7 +345,7 @@ func (msg *MsgMixPairReq) writeMessageNoSignature(op string, w io.Writer, pver u
 		if l := len(utxo.Signature); !hashing && l > MaxMixPairReqUTXOSignatureLen {
 			msg := fmt.Sprintf("UTXO signature is too long [len %v, max %v]",
 				l, MaxMixPairReqUTXOSignatureLen)
-			return messageError(op, msg)
+			return messageErrorWithCode(op, ErrVarBytesTooLong, msg)
 		}
 		err = WriteVarBytes(w, pver, utxo.Signature)
 		if err != nil {
@@ -450,18 +450,18 @@ func NewMsgMixPairReq(identity [33]byte, expiry uint32, mixAmount int64,
 		msg := fmt.Sprintf("script class length is too long "+
 			"[len %d, max %d]", lenScriptClass,
 			MaxMixPairReqScriptClassLen)
-		return nil, messageError(op, msg)
+		return nil, messageErrorWithCode(op, ErrMixPairReqScriptClassTooLong, msg)
 	}
 
 	if !isStrictAscii(scriptClass) {
 		msg := "script class string is not strict ASCII"
-		return nil, messageError(op, msg)
+		return nil, messageErrorWithCode(op, ErrMalformedStrictString, msg)
 	}
 
 	if len(utxos) > MaxMixPairReqUTXOs {
 		msg := fmt.Sprintf("too many input UTXOs [len %d, max %d]",
 			len(utxos), MaxMixPairReqUTXOs)
-		return nil, messageError(op, msg)
+		return nil, messageErrorWithCode(op, ErrTooManyMixPairReqUTXOs, msg)
 	}
 
 	msg := &MsgMixPairReq{

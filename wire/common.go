@@ -296,7 +296,47 @@ func readElement(r io.Reader, element interface{}) error {
 		}
 		return nil
 
+	// Mixed message
+	case *[MixMsgSize]byte:
+		_, err := io.ReadFull(r, e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
 	case *chainhash.Hash:
+		_, err := io.ReadFull(r, e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// Mix identity
+	case *[33]byte:
+		_, err := io.ReadFull(r, e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// Mix signature
+	case *[64]byte:
+		_, err := io.ReadFull(r, e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// sntrup4591761 ciphertext
+	case *[1047]byte:
+		_, err := io.ReadFull(r, e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// sntrup4591761 public key
+	case *[1218]byte:
 		_, err := io.ReadFull(r, e[:])
 		if err != nil {
 			return err
@@ -430,7 +470,47 @@ func writeElement(w io.Writer, element interface{}) error {
 		}
 		return nil
 
+	// Mixed message
+	case *[MixMsgSize]byte:
+		_, err := w.Write(e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
 	case *chainhash.Hash:
+		_, err := w.Write(e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// Mix identity
+	case *[33]byte:
+		_, err := w.Write(e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// Mix signature
+	case *[64]byte:
+		_, err := w.Write(e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// sntrup4591761 ciphertext
+	case *[1047]byte:
+		_, err := w.Write(e[:])
+		if err != nil {
+			return err
+		}
+		return nil
+
+	// sntrup4591761 public key
+	case *[1218]byte:
 		_, err := w.Write(e[:])
 		if err != nil {
 			return err

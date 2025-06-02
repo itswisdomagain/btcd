@@ -69,7 +69,7 @@ func shallowCopyTx(tx *wire.MsgTx) wire.MsgTx {
 }
 
 // ShallowTxCopyNoSigs creates a shallow copy of the transaction without any
-// input signature script, for use when calculating the transaction hash.
+// input signature script.
 func ShallowTxCopyNoSigs(tx *wire.MsgTx) *wire.MsgTx {
 	txCopy := shallowCopyTx(tx)
 	for i := range txCopy.TxIn {

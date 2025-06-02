@@ -76,6 +76,17 @@ func TestMessage(t *testing.T) {
 		[]byte("payload"))
 	msgCFHeaders := NewMsgCFHeaders()
 	msgCFCheckpt := NewMsgCFCheckpt(GCSFilterRegular, &chainhash.Hash{}, 0)
+	msgMixPR, err := NewMsgMixPairReq([33]byte{}, 1, 1, "", 1, 1, 1, 1, []MixPairReqUTXO{}, NewTxOut(0, []byte{}), 1, 1)
+	if err != nil {
+		t.Errorf("NewMsgMixPairReq: %v", err)
+	}
+	msgMixKE := NewMsgMixKeyExchange([33]byte{}, [32]byte{}, 1, 1, 1, [33]byte{}, [1218]byte{}, [32]byte{}, []chainhash.Hash{})
+	msgMixCT := NewMsgMixCiphertexts([33]byte{}, [32]byte{}, 1, [][1047]byte{}, []chainhash.Hash{})
+	msgMixSR := NewMsgMixSlotReserve([33]byte{}, [32]byte{}, 1, [][][]byte{{{}}}, []chainhash.Hash{})
+	msgMixFP := NewMsgMixFactoredPoly([33]byte{}, [32]byte{}, 1, [][]byte{}, []chainhash.Hash{})
+	msgMixDC := NewMsgMixDCNet([33]byte{}, [32]byte{}, 1, []MixVect{make(MixVect, 1)}, []chainhash.Hash{})
+	msgMixCM := NewMsgMixConfirm([33]byte{}, [32]byte{}, 1, NewMsgTx(TxVersion), []chainhash.Hash{})
+	msgMixRS := NewMsgMixSecrets([33]byte{}, [32]byte{}, 1, [32]byte{}, [][]byte{}, MixVect{})
 
 	tests := []struct {
 		in     Message    // Value to encode
@@ -111,6 +122,14 @@ func TestMessage(t *testing.T) {
 		{msgCFilter, msgCFilter, pver, MainNet, 65},
 		{msgCFHeaders, msgCFHeaders, pver, MainNet, 90},
 		{msgCFCheckpt, msgCFCheckpt, pver, MainNet, 58},
+		{msgMixPR, msgMixPR, pver, MainNet, 167},
+		{msgMixKE, msgMixKE, pver, MainNet, 1453},
+		{msgMixCT, msgMixCT, pver, MainNet, 158},
+		{msgMixSR, msgMixSR, pver, MainNet, 161},
+		{msgMixFP, msgMixFP, pver, MainNet, 159},
+		{msgMixDC, msgMixDC, pver, MainNet, 181},
+		{msgMixCM, msgMixCM, pver, MainNet, 168},
+		{msgMixRS, msgMixRS, pver, MainNet, 192},
 	}
 
 	t.Logf("Running %d tests", len(tests))

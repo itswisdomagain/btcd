@@ -6,9 +6,9 @@ package wire
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -97,7 +97,7 @@ func TestMsgMixFactoredPolyCrossProtocol(t *testing.T) {
 		name           string
 		encodeVersion  uint32
 		decodeVersion  uint32
-		err            string
+		err            error
 		remainingBytes int
 	}{{
 		name:          "Latest->MixVersion",
@@ -107,7 +107,7 @@ func TestMsgMixFactoredPolyCrossProtocol(t *testing.T) {
 		name:          "Latest->MixVersion-1",
 		encodeVersion: ProtocolVersion,
 		decodeVersion: MixVersion - 1,
-		err:           "message invalid for protocol version",
+		err:           ErrMsgInvalidForPVer,
 	}, {
 		name:          "MixVersion->Latest",
 		encodeVersion: MixVersion,
@@ -119,7 +119,7 @@ func TestMsgMixFactoredPolyCrossProtocol(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			if tc.err != "" && tc.remainingBytes != 0 {
+			if tc.err != nil && tc.remainingBytes != 0 {
 				t.Errorf("invalid testcase: non-zero remaining bytes " +
 					"expects no decoding error")
 			}
@@ -134,7 +134,7 @@ func TestMsgMixFactoredPolyCrossProtocol(t *testing.T) {
 
 			msg = new(MsgMixFactoredPoly)
 			err = msg.BtcDecode(buf, tc.decodeVersion, BaseEncoding)
-			if (err == nil && tc.err != "") || (err != nil && !strings.Contains(err.Error(), tc.err)) {
+			if !errors.Is(err, tc.err) {
 				t.Errorf("decode failed; want %v, got %v", tc.err, err)
 			}
 			if err == nil && buf.Len() != tc.remainingBytes {

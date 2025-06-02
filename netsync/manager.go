@@ -37,18 +37,18 @@ const (
 	// hashes to store in memory.
 	maxRejectedTxns = 1000
 
-	// maxRejectedTxnsDcrd specifies the maximum number of recently rejected
-	// transactions to track.  This is primarily used to avoid wasting a bunch
-	// of bandwidth from requesting transactions that are already known to be
+	// maxRejectedMixMsgs specifies the maximum number of recently rejected
+	// mixing messages to track.  This is primarily used to avoid wasting a
+	// bunch of bandwidth from requesting messages that are already known to be
 	// invalid again from multiple peers, however, it also doubles as DoS
 	// protection against malicious peers.
 	//
 	// Recall that there are 125 connection slots by default.  Assuming the
 	// default setting of 8 outbound connections, which attackers cannot
 	// control, that leaves 117 max inbound connections which could potentially
-	// be malicious.  maxRejectedTxnsDcrd is set to target tracking the maximum
-	// number of rejected transactions that would result from 120 connections
-	// with malicious peers.  120 is used since it is strictly greater than the
+	// be malicious.  maxRejectedMixMsgs is set to target tracking the maximum
+	// number of rejected messages that would result from 120 connections with
+	// malicious peers.  120 is used since it is strictly greater than the
 	// aforementioned 117 max inbound connections while still providing for the
 	// possibility of a few happenstance malicious outbound connections as well.
 	//
@@ -56,22 +56,14 @@ const (
 	// the configured value, the result is not catastrophic as it would only
 	// result in increased bandwidth usage versus not exceeding it.
 	//
-	// rejectedTxnsFPRateDcrd is the false positive rate to use for the APBF used to
-	// track recently rejected transactions.  It is set to a rate of 1 per 10
-	// million to make it incredibly unlikely that any transactions that haven't
+	// rejectedMixMsgsFPRate is the false positive rate to use for the APBF used
+	// to track recently rejected mixing messages.  It is set to a rate of 1 per
+	// 10 million to make it incredibly unlikely that any message that haven't
 	// actually been rejected are incorrectly treated as if they had.
 	//
 	// These values result in about 568 KiB memory usage including overhead.
-	maxRejectedTxnsDcrd    = 62500
-	rejectedTxnsFPRateDcrd = 0.0000001
-
-	// maxRejectedMixMsgs specifies the maximum number of recently
-	// rejected mixing messages to track, and rejectedMixMsgsFPRate is the
-	// false positive rate for the APBF.  These values have not been tuned
-	// specifically for the mixing messages, and the equivalent constants
-	// for handling rejected transactions are used.
-	maxRejectedMixMsgs    = maxRejectedTxnsDcrd
-	rejectedMixMsgsFPRate = rejectedTxnsFPRateDcrd
+	maxRejectedMixMsgs    = 62500
+	rejectedMixMsgsFPRate = 0.0000001
 
 	// maxRequestedBlocks is the maximum number of requested block
 	// hashes to store in memory.
@@ -144,8 +136,8 @@ type txMsg struct {
 	reply chan struct{}
 }
 
-// mixMsg packages a mix message and the peer it came from together
-// so the ... has access to that information.
+// mixMsg is a message type to be sent across the message channel for requesting
+// a message's acceptance to the mixing pool.
 type mixMsg struct {
 	msg   mixing.Message
 	peer  *peerpkg.Peer
@@ -156,6 +148,22 @@ type mixMsg struct {
 // retrieving the current sync peer.
 type getSyncPeerMsg struct {
 	reply chan int32
+}
+
+// requestFromPeerMsg is a message type to be sent across the message channel
+// for requesting data from a given peer. It routes this through the sync
+// manager so the sync manager doesn't ban the peer when it sends this
+// information back.
+type requestFromPeerMsg struct {
+	peer      *peerpkg.Peer
+	mixHashes []chainhash.Hash
+	reply     chan requestFromPeerResponse
+}
+
+// requestFromPeerResponse is a response sent to the reply channel of a
+// requestFromPeerMsg query.
+type requestFromPeerResponse struct {
+	err error
 }
 
 // processBlockResponse is a response sent to the reply channel of a
@@ -611,6 +619,31 @@ func (sm *SyncManager) handleDonePeerMsg(peer *peerpkg.Peer) {
 
 	sm.clearRequestedState(state)
 
+	if peer == sm.syncPeer {
+		// Update the sync peer. The server has already disconnected the
+		// peer before signaling to the sync manager.
+		sm.updateSyncPeer(false)
+	}
+}
+
+// clearRequestedState wipes all expected transactions and blocks from the sync
+// manager's requested maps that were requested under a peer's sync state, This
+// allows them to be rerequested by a subsequent sync peer.
+func (sm *SyncManager) clearRequestedState(state *peerSyncState) {
+	// Remove requested transactions from the global map so that they will
+	// be fetched from elsewhere next time we get an inv.
+	for txHash := range state.requestedTxns {
+		delete(sm.requestedTxns, txHash)
+	}
+
+	// Remove requested blocks from the global map so that they will be
+	// fetched from elsewhere next time we get an inv.
+	// TODO: we could possibly here check which peers have these blocks
+	// and request them now to speed things up a little.
+	for blockHash := range state.requestedBlocks {
+		delete(sm.requestedBlocks, blockHash)
+	}
+
 	// Re-request in-flight mix messages that were not received by the
 	// disconnected peer if the data was announced by another peer. Remove the
 	// data from the manager's requested data maps if no other peers have
@@ -655,31 +688,6 @@ MixHashes:
 		if len(gdmsg.InvList) > 0 {
 			pp.QueueMessage(gdmsg, nil)
 		}
-	}
-
-	if peer == sm.syncPeer {
-		// Update the sync peer. The server has already disconnected the
-		// peer before signaling to the sync manager.
-		sm.updateSyncPeer(false)
-	}
-}
-
-// clearRequestedState wipes all expected transactions and blocks from the sync
-// manager's requested maps that were requested under a peer's sync state, This
-// allows them to be rerequested by a subsequent sync peer.
-func (sm *SyncManager) clearRequestedState(state *peerSyncState) {
-	// Remove requested transactions from the global map so that they will
-	// be fetched from elsewhere next time we get an inv.
-	for txHash := range state.requestedTxns {
-		delete(sm.requestedTxns, txHash)
-	}
-
-	// Remove requested blocks from the global map so that they will be
-	// fetched from elsewhere next time we get an inv.
-	// TODO: we could possibly here check which peers have these blocks
-	// and request them now to speed things up a little.
-	for blockHash := range state.requestedBlocks {
-		delete(sm.requestedBlocks, blockHash)
 	}
 }
 
@@ -1266,6 +1274,11 @@ func (sm *SyncManager) handleNotFoundMsg(nfmsg *notFoundMsg) {
 				delete(state.requestedTxns, inv.Hash)
 				delete(sm.requestedTxns, inv.Hash)
 			}
+		case wire.InvTypeMix:
+			if _, exists := state.requestedMixMsgs[inv.Hash]; exists {
+				delete(state.requestedMixMsgs, inv.Hash)
+				delete(sm.requestedMixMsgs, inv.Hash)
+			}
 		}
 	}
 }
@@ -1603,6 +1616,12 @@ out:
 				}
 				msg.reply <- peerID
 
+			case requestFromPeerMsg:
+				err := sm.requestFromPeer(msg.peer, msg.mixHashes)
+				msg.reply <- requestFromPeerResponse{
+					err: err,
+				}
+
 			case processBlockMsg:
 				_, isOrphan, err := sm.chain.ProcessBlock(
 					msg.block, msg.flags)
@@ -1766,9 +1785,8 @@ func (sm *SyncManager) QueueTx(tx *btcutil.Tx, peer *peerpkg.Peer, done chan str
 	sm.msgChan <- &txMsg{tx: tx, peer: peer, reply: done}
 }
 
-// QueueTx adds the passed transaction message and peer to the block handling
-// queue. Responds to the done channel argument after the tx message is
-// processed.
+// QueueMixMsg adds the passed mixing message and peer to the event handling
+// queue.
 func (sm *SyncManager) QueueMixMsg(msg mixing.Message, peer *peerpkg.Peer, done chan error) {
 	// Don't accept more transactions if we're shutting down.
 	if atomic.LoadInt32(&sm.shutdown) != 0 {
@@ -1871,10 +1889,33 @@ func (sm *SyncManager) SyncPeerID() int32 {
 	return <-reply
 }
 
-func (sm *SyncManager) RequestMixMsgsFromPeer(peer *peerpkg.Peer, mixHashes []chainhash.Hash) error {
+// RequestFromPeer allows an outside caller to request data from a peer. The
+// requests are logged in the internal map of requests so the peer is not later
+// banned for sending the respective data.
+func (m *SyncManager) RequestFromPeer(p *peerpkg.Peer, mixHashes []chainhash.Hash) error {
+	reply := make(chan requestFromPeerResponse, 1)
+	request := requestFromPeerMsg{
+		peer:      p,
+		mixHashes: mixHashes,
+		reply:     reply,
+	}
+	select {
+	case m.msgChan <- request:
+	case <-m.quit:
+	}
+
+	select {
+	case response := <-reply:
+		return response.err
+	case <-m.quit:
+		return fmt.Errorf("sync manager stopped")
+	}
+}
+
+func (sm *SyncManager) requestFromPeer(peer *peerpkg.Peer, mixHashes []chainhash.Hash) error {
 	state, exists := sm.peerStates[peer]
 	if !exists {
-		log.Warnf("Received inv message from unknown peer %s", peer)
+		log.Warnf("Cannot request data from unknown peer %s", peer)
 		return fmt.Errorf("unknown peer")
 	}
 

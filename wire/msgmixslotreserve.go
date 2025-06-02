@@ -48,7 +48,7 @@ func (msg *MsgMixSlotReserve) BtcDecode(r io.Reader, pver uint32, _ MessageEncod
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.SessionID,
@@ -64,11 +64,11 @@ func (msg *MsgMixSlotReserve) BtcDecode(r io.Reader, pver uint32, _ MessageEncod
 	}
 	if mcount == 0 {
 		msg := fmt.Sprintf("too few mixed messages [%v]", mcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if mcount > MaxMixMcount {
 		msg := fmt.Sprintf("too many total mixed messages [%v]", mcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	kpcount, err := ReadVarInt(r, pver)
 	if err != nil {
@@ -76,12 +76,12 @@ func (msg *MsgMixSlotReserve) BtcDecode(r io.Reader, pver uint32, _ MessageEncod
 	}
 	if kpcount == 0 {
 		msg := fmt.Sprintf("too few mixing peers [%v]", kpcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if kpcount > MaxMixPeers {
 		msg := fmt.Sprintf("too many mixing peers [count %v, max %v]",
 			kpcount, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	dcmix := make([][][]byte, mcount)
 	for i := range dcmix {
@@ -104,7 +104,7 @@ func (msg *MsgMixSlotReserve) BtcDecode(r io.Reader, pver uint32, _ MessageEncod
 	if count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	seen := make([]chainhash.Hash, count)
@@ -126,7 +126,7 @@ func (msg *MsgMixSlotReserve) BtcEncode(w io.Writer, pver uint32, _ MessageEncod
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := writeElement(w, &msg.Signature)
@@ -186,20 +186,20 @@ func (msg *MsgMixSlotReserve) writeMessageNoSignature(op string, w io.Writer, pv
 	mcount := len(msg.DCMix)
 	if !hashing && mcount == 0 {
 		msg := fmt.Sprintf("too few mixed messages [%v]", mcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if !hashing && mcount > MaxMixMcount {
 		msg := fmt.Sprintf("too many total mixed messages [%v]", mcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	kpcount := len(msg.DCMix[0])
 	if !hashing && kpcount == 0 {
 		msg := fmt.Sprintf("too few mixing peers [%v]", kpcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if !hashing && kpcount > MaxMixPeers {
 		msg := fmt.Sprintf("too many mixing peers [%v]", kpcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	err = WriteVarInt(w, pver, uint64(mcount))
 	if err != nil {
@@ -212,13 +212,13 @@ func (msg *MsgMixSlotReserve) writeMessageNoSignature(op string, w io.Writer, pv
 	for i := range msg.DCMix {
 		if !hashing && len(msg.DCMix[i]) != kpcount {
 			msg := "invalid matrix dimensions"
-			return messageError(op, msg)
+			return messageErrorWithCode(op, ErrInvalidMsg, msg)
 		}
 		for j := range msg.DCMix[i] {
 			v := msg.DCMix[i][j]
 			if !hashing && len(v) > MaxMixFieldValLen {
 				msg := "value exceeds bytes necessary to represent number in field"
-				return messageError(op, msg)
+				return messageErrorWithCode(op, ErrInvalidMsg, msg)
 			}
 			err := WriteVarBytes(w, pver, v)
 			if err != nil {
@@ -231,7 +231,7 @@ func (msg *MsgMixSlotReserve) writeMessageNoSignature(op string, w io.Writer, pv
 	if !hashing && count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	err = WriteVarInt(w, pver, uint64(count))

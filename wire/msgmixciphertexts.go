@@ -36,7 +36,7 @@ func (msg *MsgMixCiphertexts) BtcDecode(r io.Reader, pver uint32, _ MessageEncod
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.SessionID,
@@ -53,7 +53,7 @@ func (msg *MsgMixCiphertexts) BtcDecode(r io.Reader, pver uint32, _ MessageEncod
 	if count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	ciphertexts := make([][1047]byte, count)
@@ -84,7 +84,7 @@ func (msg *MsgMixCiphertexts) BtcEncode(w io.Writer, pver uint32, _ MessageEncod
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := writeElement(w, &msg.Signature)
@@ -140,12 +140,12 @@ func (msg *MsgMixCiphertexts) writeMessageNoSignature(op string, w io.Writer, pv
 		msg := fmt.Sprintf("differing counts of ciphertexts (%d) "+
 			"and seen key exchange messages (%d)", count,
 			len(msg.SeenKeyExchanges))
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if !hashing && count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	err := writeElements(w, &msg.Identity, &msg.SessionID, msg.Run)

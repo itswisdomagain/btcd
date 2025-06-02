@@ -689,39 +689,6 @@ func (sp *serverPeer) OnBlock(_ *peer.Peer, msg *wire.MsgBlock, buf []byte) {
 	<-sp.blockProcessed
 }
 
-// OnTx is invoked when a peer receives a tx bitcoin message.  It blocks
-// until the bitcoin transaction has been fully processed.  Unlock the block
-// handler this does not serialize all transactions through a single thread
-// transactions don't rely on the previous one in a linear fashion like blocks.
-func (sp *serverPeer) OnMixMessage(_ *peer.Peer, msg mixing.Message) {
-	if cfg.BlocksOnly {
-		peerLog.Tracef("Ignoring mix message %v from %v - blocksonly "+
-			"enabled", msg.Hash(), sp)
-		return
-	}
-
-	// Add the message to the known inventory for the peer.
-	hash := msg.Hash()
-	iv := wire.NewInvVect(wire.InvTypeMix, &hash)
-	sp.AddKnownInventory(iv)
-
-	// Queue the message to be handled by the net sync manager
-	// XXX: add ban score increases for non-instaban errors?
-	sp.server.syncManager.QueueMixMsg(msg, sp.Peer, sp.mixMsgProcessed)
-	err := <-sp.mixMsgProcessed
-	var missingOwnPRErr *mixpool.MissingOwnPRError
-	if errors.As(err, &missingOwnPRErr) {
-		mixHashes := []chainhash.Hash{missingOwnPRErr.MissingPR}
-		sp.server.syncManager.RequestMixMsgsFromPeer(sp.Peer, mixHashes)
-		return
-	}
-	if mixpool.IsBannable(err, sp.Services()) {
-		peerLog.Warnf("Misbehaving peer %s -- sent malformed mix message: %s",
-			sp, err)
-		sp.server.BanPeer(sp)
-	}
-}
-
 // OnInv is invoked when a peer receives an inv bitcoin message and is
 // used to examine the inventory being advertised by the remote peer and react
 // accordingly.  We pass the message down to blockmanager which will call
@@ -748,8 +715,7 @@ func (sp *serverPeer) OnInv(_ *peer.Peer, msg *wire.MsgInv) {
 			continue
 		}
 		if invVect.Type == wire.InvTypeMix {
-			peerLog.Infof("Peer %v is announcing mix messages -- disconnecting",
-				sp)
+			peerLog.Infof("Peer %v is announcing mix messages -- disconnecting", sp)
 			sp.Disconnect()
 			return
 		}
@@ -1489,6 +1455,82 @@ func (sp *serverPeer) OnAddrV2(_ *peer.Peer, msg *wire.MsgAddrV2) {
 	sp.server.addrManager.AddAddresses(msg.AddrList, sp.NA())
 }
 
+// onMixMessage is the generic handler for all mix messages handler callbacks.
+func (sp *serverPeer) onMixMessage(msg mixing.Message) {
+	if cfg.BlocksOnly {
+		peerLog.Tracef("Ignoring mix message %v from %v - blocksonly "+
+			"enabled", msg.Hash(), sp)
+		return
+	}
+
+	// Add the message to the known inventory for the peer.
+	hash := msg.Hash()
+	iv := wire.NewInvVect(wire.InvTypeMix, &hash)
+	sp.AddKnownInventory(iv)
+
+	// Queue the message to be handled by the net sync manager
+	// XXX: add ban score increases for non-instaban errors?
+	sp.server.syncManager.QueueMixMsg(msg, sp.Peer, sp.mixMsgProcessed)
+	err := <-sp.mixMsgProcessed
+	var missingOwnPRErr *mixpool.MissingOwnPRError
+	if errors.As(err, &missingOwnPRErr) {
+		mixHashes := []chainhash.Hash{missingOwnPRErr.MissingPR}
+		sp.server.syncManager.RequestFromPeer(sp.Peer, mixHashes)
+		return
+	}
+	if mixpool.IsBannable(err, sp.Services()) {
+		peerLog.Warnf("Misbehaving peer %s -- sent malformed mix message: %s",
+			sp, err)
+		sp.server.BanPeer(sp)
+		sp.Disconnect()
+	}
+}
+
+// OnMixPairReq submits a received mixing pair request message to the mixpool.
+func (sp *serverPeer) OnMixPairReq(_ *peer.Peer, msg *wire.MsgMixPairReq) {
+	sp.onMixMessage(msg)
+}
+
+// OnMixKeyExchange submits a received mixing key exchange message to the
+// mixpool.
+func (sp *serverPeer) OnMixKeyExchange(_ *peer.Peer, msg *wire.MsgMixKeyExchange) {
+	sp.onMixMessage(msg)
+}
+
+// OnMixCiphertexts submits a received mixing ciphertext exchange message to
+// the mixpool.
+func (sp *serverPeer) OnMixCiphertexts(_ *peer.Peer, msg *wire.MsgMixCiphertexts) {
+	sp.onMixMessage(msg)
+}
+
+// OnMixSlotReserve submits a received mixing slot reservation message to the
+// mixpool.
+func (sp *serverPeer) OnMixSlotReserve(_ *peer.Peer, msg *wire.MsgMixSlotReserve) {
+	sp.onMixMessage(msg)
+}
+
+// OnMixDCNet submits a received mixing XOR DC-net message to the mixpool.
+func (sp *serverPeer) OnMixDCNet(_ *peer.Peer, msg *wire.MsgMixDCNet) {
+	sp.onMixMessage(msg)
+}
+
+// OnMixConfirm submits a received mixing confirmation message to the mixpool.
+func (sp *serverPeer) OnMixConfirm(_ *peer.Peer, msg *wire.MsgMixConfirm) {
+	sp.onMixMessage(msg)
+}
+
+// OnMixFactoredPoly submits a received factored polynomial message to the
+// mixpool.
+func (sp *serverPeer) OnMixFactoredPoly(_ *peer.Peer, msg *wire.MsgMixFactoredPoly) {
+	sp.onMixMessage(msg)
+}
+
+// OnMixSecrets submits a received mixing reveal secrets message to the
+// mixpool.
+func (sp *serverPeer) OnMixSecrets(_ *peer.Peer, msg *wire.MsgMixSecrets) {
+	sp.onMixMessage(msg)
+}
+
 // OnRead is invoked when a peer receives a message and it is used to update
 // the bytes received by the server.
 func (sp *serverPeer) OnRead(_ *peer.Peer, bytesRead int, msg wire.Message, err error) {
@@ -1627,18 +1669,18 @@ func (s *server) AnnounceNewTransactions(txns []*mempool.TxDesc) {
 	}
 }
 
-// AnnounceNewTransactions generates and relays inventory vectors and notifies
-// both websocket and getblocktemplate long poll clients of the passed
-// transactions.  This function should be called whenever new transactions
-// are added to the mempool.
+// AnnounceMixMessages generates and relays inventory vectors of the passed
+// mixing messages.  This function should be called whenever new messages are
+// accepted to the mixpool.
 func (s *server) AnnounceMixMessages(msgs []mixing.Message) {
 	// Generate and relay inventory vectors for all newly accepted mixing
 	// messages.
 	s.relayMixMessages(msgs)
 
-	// if s.rpcServer != nil {
-	// 	s.rpcServer.NotifyMixMessages(msgs)
-	// }
+	if s.rpcServer != nil {
+		// TODO: Implement rpcServer.NotifyMixMessages.
+		// s.rpcServer.NotifyMixMessages(msgs)
+	}
 }
 
 // Transaction has one confirmation on the main chain. Now we can mark it as no
@@ -2282,30 +2324,37 @@ func disconnectPeer(peerList map[int32]*serverPeer, compareFunc func(*serverPeer
 func newPeerConfig(sp *serverPeer) *peer.Config {
 	return &peer.Config{
 		Listeners: peer.MessageListeners{
-			OnVersion:      sp.OnVersion,
-			OnVerAck:       sp.OnVerAck,
-			OnMemPool:      sp.OnMemPool,
-			OnTx:           sp.OnTx,
-			OnBlock:        sp.OnBlock,
-			OnMixMessage:   sp.OnMixMessage,
-			OnInv:          sp.OnInv,
-			OnHeaders:      sp.OnHeaders,
-			OnGetData:      sp.OnGetData,
-			OnGetBlocks:    sp.OnGetBlocks,
-			OnGetHeaders:   sp.OnGetHeaders,
-			OnGetCFilters:  sp.OnGetCFilters,
-			OnGetCFHeaders: sp.OnGetCFHeaders,
-			OnGetCFCheckpt: sp.OnGetCFCheckpt,
-			OnFeeFilter:    sp.OnFeeFilter,
-			OnFilterAdd:    sp.OnFilterAdd,
-			OnFilterClear:  sp.OnFilterClear,
-			OnFilterLoad:   sp.OnFilterLoad,
-			OnGetAddr:      sp.OnGetAddr,
-			OnAddr:         sp.OnAddr,
-			OnAddrV2:       sp.OnAddrV2,
-			OnRead:         sp.OnRead,
-			OnWrite:        sp.OnWrite,
-			OnNotFound:     sp.OnNotFound,
+			OnVersion:         sp.OnVersion,
+			OnVerAck:          sp.OnVerAck,
+			OnMemPool:         sp.OnMemPool,
+			OnTx:              sp.OnTx,
+			OnBlock:           sp.OnBlock,
+			OnMixPairReq:      sp.OnMixPairReq,
+			OnMixKeyExchange:  sp.OnMixKeyExchange,
+			OnMixCiphertexts:  sp.OnMixCiphertexts,
+			OnMixSlotReserve:  sp.OnMixSlotReserve,
+			OnMixDCNet:        sp.OnMixDCNet,
+			OnMixConfirm:      sp.OnMixConfirm,
+			OnMixFactoredPoly: sp.OnMixFactoredPoly,
+			OnMixSecrets:      sp.OnMixSecrets,
+			OnInv:             sp.OnInv,
+			OnHeaders:         sp.OnHeaders,
+			OnGetData:         sp.OnGetData,
+			OnGetBlocks:       sp.OnGetBlocks,
+			OnGetHeaders:      sp.OnGetHeaders,
+			OnGetCFilters:     sp.OnGetCFilters,
+			OnGetCFHeaders:    sp.OnGetCFHeaders,
+			OnGetCFCheckpt:    sp.OnGetCFCheckpt,
+			OnFeeFilter:       sp.OnFeeFilter,
+			OnFilterAdd:       sp.OnFilterAdd,
+			OnFilterClear:     sp.OnFilterClear,
+			OnFilterLoad:      sp.OnFilterLoad,
+			OnGetAddr:         sp.OnGetAddr,
+			OnAddr:            sp.OnAddr,
+			OnAddrV2:          sp.OnAddrV2,
+			OnRead:            sp.OnRead,
+			OnWrite:           sp.OnWrite,
+			OnNotFound:        sp.OnNotFound,
 
 			// Note: The reference client currently bans peers that send alerts
 			// not signed with its key.  We could verify against their key, but

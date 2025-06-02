@@ -22,7 +22,6 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/mixing"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/go-socks/socks"
 	"github.com/davecgh/go-spew/spew"
@@ -206,8 +205,29 @@ type MessageListeners struct {
 	// OnSendAddrV2 is invoked when a peer receives a sendaddrv2 message.
 	OnSendAddrV2 func(p *Peer, msg *wire.MsgSendAddrV2)
 
-	// OnMixMessage is invoked when a peer receives a mix** message.
-	OnMixMessage func(p *Peer, msg mixing.Message)
+	// OnMixPairReq is invoked when a peer receives a mixpairreq message.
+	OnMixPairReq func(p *Peer, msg *wire.MsgMixPairReq)
+
+	// OnMixKeyExchange is invoked when a peer receives a mixkeyxchg message.
+	OnMixKeyExchange func(p *Peer, msg *wire.MsgMixKeyExchange)
+
+	// OnMixCiphertexts is invoked when a peer receives a mixcphrtxt message.
+	OnMixCiphertexts func(p *Peer, msg *wire.MsgMixCiphertexts)
+
+	// OnMixSlotReserve is invoked when a peer receives a mixslotres message.
+	OnMixSlotReserve func(p *Peer, msg *wire.MsgMixSlotReserve)
+
+	// OnMixDCNet is invoked when a peer receives a mixdcnet message.
+	OnMixDCNet func(p *Peer, msg *wire.MsgMixDCNet)
+
+	// OnMixConfirm is invoked when a peer receives a mixconfirm message.
+	OnMixConfirm func(p *Peer, msg *wire.MsgMixConfirm)
+
+	// OnMixFactoredPoly is invoked when a peer receives a mixfactpoly message.
+	OnMixFactoredPoly func(p *Peer, msg *wire.MsgMixFactoredPoly)
+
+	// OnMixSecrets is invoked when a peer receives a mixsecrets message.
+	OnMixSecrets func(p *Peer, msg *wire.MsgMixSecrets)
 
 	// OnRead is invoked when a peer receives a bitcoin message.  It
 	// consists of the number of bytes read, the message, and whether or not
@@ -1251,7 +1271,7 @@ func (p *Peer) maybeAddDeadline(pendingResponses map[string]time.Time, msgCmd st
 		pendingResponses[wire.CmdInv] = deadline
 
 	case wire.CmdGetData:
-		// Expects a block, merkleblock, tx, or notfound message.
+		// Expects a block, merkleblock, tx, mix, or notfound message.
 		pendingResponses[wire.CmdBlock] = deadline
 		pendingResponses[wire.CmdMerkleBlock] = deadline
 		pendingResponses[wire.CmdTx] = deadline
@@ -1490,8 +1510,6 @@ out:
 				continue
 			}
 
-			// panic(err)
-
 			// Only log the error and send reject message if the
 			// local peer is not forcibly disconnecting and the
 			// remote peer has not disconnected.
@@ -1680,43 +1698,43 @@ out:
 			}
 
 		case *wire.MsgMixPairReq:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixPairReq != nil {
+				p.cfg.Listeners.OnMixPairReq(p, msg)
 			}
 
 		case *wire.MsgMixKeyExchange:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixKeyExchange != nil {
+				p.cfg.Listeners.OnMixKeyExchange(p, msg)
 			}
 
 		case *wire.MsgMixCiphertexts:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixCiphertexts != nil {
+				p.cfg.Listeners.OnMixCiphertexts(p, msg)
 			}
 
 		case *wire.MsgMixSlotReserve:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixSlotReserve != nil {
+				p.cfg.Listeners.OnMixSlotReserve(p, msg)
 			}
 
 		case *wire.MsgMixDCNet:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixDCNet != nil {
+				p.cfg.Listeners.OnMixDCNet(p, msg)
 			}
 
 		case *wire.MsgMixConfirm:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixConfirm != nil {
+				p.cfg.Listeners.OnMixConfirm(p, msg)
 			}
 
 		case *wire.MsgMixFactoredPoly:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixFactoredPoly != nil {
+				p.cfg.Listeners.OnMixFactoredPoly(p, msg)
 			}
 
 		case *wire.MsgMixSecrets:
-			if p.cfg.Listeners.OnMixMessage != nil {
-				p.cfg.Listeners.OnMixMessage(p, msg)
+			if p.cfg.Listeners.OnMixSecrets != nil {
+				p.cfg.Listeners.OnMixSecrets(p, msg)
 			}
 
 		default:
@@ -2468,14 +2486,6 @@ func (p *Peer) AssociateConnection(conn net.Conn) {
 // Disconnect.
 func (p *Peer) WaitForDisconnect() {
 	<-p.quit
-}
-
-// WaitForDisconnect waits until the peer has completely disconnected and all
-// resources are cleaned up.  This will happen if either the local or remote
-// side has been disconnected or the peer is forcibly disconnected via
-// Disconnect.
-func (p *Peer) DisconnectChan() <-chan struct{} {
-	return p.quit
 }
 
 // newPeerBase returns a new base bitcoin peer based on the inbound flag.  This

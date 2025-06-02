@@ -36,7 +36,7 @@ type MsgMixSecrets struct {
 func writeMixVect(op string, w io.Writer, pver uint32, vec MixVect) error {
 	if len(vec) > MaxMixMcount {
 		msg := "DC-net mix vector dimensions are too large for maximum message count"
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 
 	// Write dimensions
@@ -80,12 +80,12 @@ func readMixVect(op string, r io.Reader, pver uint32, vec *MixVect) error {
 
 	if n > MaxMixMcount {
 		msg := "DC-net mix vector dimensions are too large for maximum message count"
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	if msize != MixMsgSize {
 		msg := fmt.Sprintf("mixed message length must be %d [got: %d]",
 			MixMsgSize, msize)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 
 	// Read messages
@@ -107,7 +107,7 @@ func (msg *MsgMixSecrets) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := readElements(r, &msg.Signature, &msg.Identity, &msg.SessionID,
@@ -123,7 +123,7 @@ func (msg *MsgMixSecrets) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if numSRs > MaxMixMcount {
 		msg := fmt.Sprintf("too many total mixed messages [count %v, max %v]",
 			numSRs, MaxMixMcount)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrInvalidMsg, msg)
 	}
 	msg.SlotReserveMsgs = make([][]byte, numSRs)
 	for i := uint64(0); i < numSRs; i++ {
@@ -149,7 +149,7 @@ func (msg *MsgMixSecrets) BtcDecode(r io.Reader, pver uint32, _ MessageEncoding)
 	if count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	seen := make([]chainhash.Hash, count)
@@ -171,7 +171,7 @@ func (msg *MsgMixSecrets) BtcEncode(w io.Writer, pver uint32, _ MessageEncoding)
 	if pver < MixVersion {
 		msg := fmt.Sprintf("%s message invalid for protocol version %d",
 			msg.Command(), pver)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrMsgInvalidForPVer, msg)
 	}
 
 	err := writeElement(w, &msg.Signature)
@@ -236,7 +236,7 @@ func (msg *MsgMixSecrets) writeMessageNoSignature(op string, w io.Writer, pver u
 	if count > MaxMixPeers {
 		msg := fmt.Sprintf("too many previous referenced messages [count %v, max %v]",
 			count, MaxMixPeers)
-		return messageError(op, msg)
+		return messageErrorWithCode(op, ErrTooManyPrevMixMsgs, msg)
 	}
 
 	err := writeElements(w, &msg.Identity, &msg.SessionID, msg.Run, &msg.Seed)
