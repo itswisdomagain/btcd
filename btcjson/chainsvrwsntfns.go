@@ -75,6 +75,9 @@ const (
 	// from the chain server that inform a client that a transaction that
 	// matches the loaded filter was accepted by the mempool.
 	RelevantTxAcceptedNtfnMethod = "relevanttxaccepted"
+
+	// MixMessageNtfnMethod is the method of the mixmessage notification.
+	MixMessageNtfnMethod = "mixmessage"
 )
 
 // BlockConnectedNtfn defines the blockconnected JSON-RPC notification.
@@ -285,6 +288,21 @@ func NewRelevantTxAcceptedNtfn(txHex string) *RelevantTxAcceptedNtfn {
 	return &RelevantTxAcceptedNtfn{Transaction: txHex}
 }
 
+// MixMessageNtfn defines the mixmessage JSON-RPC notification.
+type MixMessageNtfn struct {
+	Command string `json:"command"`
+	Payload string `json:"payload"`
+}
+
+// NewMixMessageNtfn returns a new instance which can be used to issue a
+// mixmessage JSON-RPC notification.
+func NewMixMessageNtfn(command, payload string) *MixMessageNtfn {
+	return &MixMessageNtfn{
+		Command: command,
+		Payload: payload,
+	}
+}
+
 func init() {
 	// The commands in this file are only usable by websockets and are
 	// notifications.
@@ -301,4 +319,5 @@ func init() {
 	MustRegisterCmd(TxAcceptedNtfnMethod, (*TxAcceptedNtfn)(nil), flags)
 	MustRegisterCmd(TxAcceptedVerboseNtfnMethod, (*TxAcceptedVerboseNtfn)(nil), flags)
 	MustRegisterCmd(RelevantTxAcceptedNtfnMethod, (*RelevantTxAcceptedNtfn)(nil), flags)
+	MustRegisterCmd(MixMessageNtfnMethod, (*MixMessageNtfn)(nil), flags)
 }

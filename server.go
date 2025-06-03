@@ -1744,8 +1744,7 @@ func (s *server) AnnounceMixMessages(msgs []mixing.Message) {
 	s.relayMixMessages(msgs)
 
 	if s.rpcServer != nil {
-		// TODO: Implement rpcServer.NotifyMixMessages.
-		// s.rpcServer.NotifyMixMessages(msgs)
+		s.rpcServer.NotifyMixMessages(msgs)
 	}
 }
 
@@ -3391,6 +3390,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 			AddrIndex:    s.addrIndex,
 			CfIndex:      s.cfIndex,
 			FeeEstimator: s.feeEstimator,
+			MixPooler:    s.mixMsgPool,
 		})
 		if err != nil {
 			return nil, err

@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/mempool"
+	"github.com/btcsuite/btcd/mixing"
 	"github.com/btcsuite/btcd/netsync"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/wire"
@@ -223,6 +224,12 @@ func (cm *rpcConnManager) RelayTransactions(txns []*mempool.TxDesc) {
 	cm.server.relayTransactions(txns)
 }
 
+// RelayMixMessages generates and relays inventory vectors for all of the
+// passed mixing messages to all connected peers.
+func (cm *rpcConnManager) RelayMixMessages(msgs []mixing.Message) {
+	cm.server.relayMixMessages(msgs)
+}
+
 // NodeAddresses returns an array consisting node addresses which can
 // potentially be used to find new nodes in the network.
 //
@@ -285,4 +292,10 @@ func (b *rpcSyncMgr) SyncPeerID() int32 {
 // rpcserverSyncManager interface implementation.
 func (b *rpcSyncMgr) LocateHeaders(locators []*chainhash.Hash, hashStop *chainhash.Hash) []wire.BlockHeader {
 	return b.server.chain.LocateHeaders(locators, hashStop)
+}
+
+// SubmitMixMessage locally processes the mixing message.
+func (b *rpcSyncMgr) SubmitMixMessage(msg mixing.Message) error {
+	_, err := b.server.mixMsgPool.AcceptMessage(msg)
+	return err
 }
