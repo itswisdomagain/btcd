@@ -739,6 +739,12 @@ type GetMiningInfoResult struct {
 	TestNet            bool    `json:"testnet"`
 }
 
+// GetMixMessageResult models the data from the getmixmessage command.
+type GetMixMessageResult struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
 // GetWorkResult models the data from the getwork command.
 type GetWorkResult struct {
 	Data     string `json:"data"`

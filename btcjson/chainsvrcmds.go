@@ -572,6 +572,28 @@ func NewGetMiningInfoCmd() *GetMiningInfoCmd {
 	return &GetMiningInfoCmd{}
 }
 
+// GetMixMessageCmd defines the getmixmessage JSON-RPC command.
+type GetMixMessageCmd struct {
+	Hash string
+}
+
+// NewGetMixMessageCmd returns a new instance which can be used to issue a
+// getmixmessage JSON-RPC command.
+func NewGetMixMessageCmd(hash string) *GetMixMessageCmd {
+	return &GetMixMessageCmd{
+		Hash: hash,
+	}
+}
+
+// GetMixPairRequestsCmd defines the getmixpairrequests JSON-RPC command.
+type GetMixPairRequestsCmd struct{}
+
+// NewGetMixPairRequestsCmd returns a new instance which can be used to issue a
+// getmixpairrequests JSON-RPC command.
+func NewGetMixPairRequestsCmd() *GetMixPairRequestsCmd {
+	return &GetMixPairRequestsCmd{}
+}
+
 // GetNetworkInfoCmd defines the getnetworkinfo JSON-RPC command.
 type GetNetworkInfoCmd struct{}
 
@@ -875,6 +897,21 @@ func (a *AllowHighFeesOrMaxFeeRate) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SendRawMixMessage defines the sendrawmixmessage JSON-RPC command.
+type SendRawMixMessageCmd struct {
+	Command string
+	Message string
+}
+
+// NewSendRawMixMessageCmd returns a new instance which can be used to issue a
+// sendrawmixmessage JSON-RPC command.
+func NewSendRawMixMessageCmd(command, message string) *SendRawMixMessageCmd {
+	return &SendRawMixMessageCmd{
+		Command: command,
+		Message: message,
+	}
+}
+
 // SendRawTransactionCmd defines the sendrawtransaction JSON-RPC command.
 type SendRawTransactionCmd struct {
 	HexTx      string
@@ -1134,6 +1171,8 @@ func init() {
 	MustRegisterCmd("getmempoolentry", (*GetMempoolEntryCmd)(nil), flags)
 	MustRegisterCmd("getmempoolinfo", (*GetMempoolInfoCmd)(nil), flags)
 	MustRegisterCmd("getmininginfo", (*GetMiningInfoCmd)(nil), flags)
+	MustRegisterCmd(("getmixmessage"), (*GetMixMessageCmd)(nil), flags)
+	MustRegisterCmd(("getmixpairrequests"), (*GetMixPairRequestsCmd)(nil), flags)
 	MustRegisterCmd("getnetworkinfo", (*GetNetworkInfoCmd)(nil), flags)
 	MustRegisterCmd("getnettotals", (*GetNetTotalsCmd)(nil), flags)
 	MustRegisterCmd("getnetworkhashps", (*GetNetworkHashPSCmd)(nil), flags)
@@ -1151,6 +1190,7 @@ func init() {
 	MustRegisterCmd("preciousblock", (*PreciousBlockCmd)(nil), flags)
 	MustRegisterCmd("reconsiderblock", (*ReconsiderBlockCmd)(nil), flags)
 	MustRegisterCmd("searchrawtransactions", (*SearchRawTransactionsCmd)(nil), flags)
+	MustRegisterCmd(("sendrawmixmessage"), (*SendRawMixMessageCmd)(nil), flags)
 	MustRegisterCmd("sendrawtransaction", (*SendRawTransactionCmd)(nil), flags)
 	MustRegisterCmd("setgenerate", (*SetGenerateCmd)(nil), flags)
 	MustRegisterCmd("signmessagewithprivkey", (*SignMessageWithPrivKeyCmd)(nil), flags)

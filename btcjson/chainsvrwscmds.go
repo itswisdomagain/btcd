@@ -57,6 +57,24 @@ func NewNotifyNewTransactionsCmd(verbose *bool) *NotifyNewTransactionsCmd {
 	}
 }
 
+// NotifyMixMessagesCmd defines the notifymixmessages JSON-RPC command.
+type NotifyMixMessagesCmd struct{}
+
+// NewNotifyMixMessagesCmd returns a new instance which can be used to issue a
+// notifymixmessages JSON-RPC command.
+func NewNotifyMixMessagesCmd() *NotifyMixMessagesCmd {
+	return &NotifyMixMessagesCmd{}
+}
+
+// StopNotifyMixMessagesCmd defines the stopnotifymixmessages JSON-RPC command.
+type StopNotifyMixMessagesCmd struct{}
+
+// NewStopNewNotifyMixMessagesCmd returns a new instance which can be used to issue a
+// stopnotifymixmessages JSON-RPC command.
+func NewStopNewNotifyMixMessagesCmd() *StopNotifyMixMessagesCmd {
+	return &StopNotifyMixMessagesCmd{}
+}
+
 // SessionCmd defines the session JSON-RPC command.
 type SessionCmd struct{}
 
@@ -229,11 +247,13 @@ func init() {
 	MustRegisterCmd("loadtxfilter", (*LoadTxFilterCmd)(nil), flags)
 	MustRegisterCmd("notifyblocks", (*NotifyBlocksCmd)(nil), flags)
 	MustRegisterCmd("notifynewtransactions", (*NotifyNewTransactionsCmd)(nil), flags)
+	MustRegisterCmd(("notifymixmessages"), (*NotifyMixMessagesCmd)(nil), flags)
 	MustRegisterCmd("notifyreceived", (*NotifyReceivedCmd)(nil), flags)
 	MustRegisterCmd("notifyspent", (*NotifySpentCmd)(nil), flags)
 	MustRegisterCmd("session", (*SessionCmd)(nil), flags)
 	MustRegisterCmd("stopnotifyblocks", (*StopNotifyBlocksCmd)(nil), flags)
 	MustRegisterCmd("stopnotifynewtransactions", (*StopNotifyNewTransactionsCmd)(nil), flags)
+	MustRegisterCmd(("stopnotifymixmessages"), (*StopNotifyMixMessagesCmd)(nil), flags)
 	MustRegisterCmd("stopnotifyspent", (*StopNotifySpentCmd)(nil), flags)
 	MustRegisterCmd("stopnotifyreceived", (*StopNotifyReceivedCmd)(nil), flags)
 	MustRegisterCmd("rescan", (*RescanCmd)(nil), flags)

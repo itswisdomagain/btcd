@@ -26,6 +26,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/database"
+	"github.com/btcsuite/btcd/mixing"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/websocket"
@@ -67,11 +68,13 @@ var wsHandlersBeforeInit = map[string]wsCommandHandler{
 	"help":                      handleWebsocketHelp,
 	"notifyblocks":              handleNotifyBlocks,
 	"notifynewtransactions":     handleNotifyNewTransactions,
+	"notifymixmessages":         handleNotifyMixMessages,
 	"notifyreceived":            handleNotifyReceived,
 	"notifyspent":               handleNotifySpent,
 	"session":                   handleSession,
 	"stopnotifyblocks":          handleStopNotifyBlocks,
 	"stopnotifynewtransactions": handleStopNotifyNewTransactions,
+	"stopnotifymixmessages":     handleStopNotifyMixMessages,
 	"stopnotifyspent":           handleStopNotifySpent,
 	"stopnotifyreceived":        handleStopNotifyReceived,
 	"rescan":                    handleRescan,
@@ -242,6 +245,15 @@ func (m *wsNotificationManager) NotifyMempoolTx(tx *btcutil.Tx, isNew bool) {
 	// shutting down.
 	select {
 	case m.queueNotification <- n:
+	case <-m.quit:
+	}
+}
+
+// NotifyMixMessage passes a mixing message accepted by the mixpool to the
+// notification manager for message broadcasting.
+func (m *wsNotificationManager) NotifyMixMessage(msg mixing.Message) {
+	select {
+	case m.queueNotification <- (notificationMixMessage)(msg):
 	case <-m.quit:
 	}
 }
@@ -451,6 +463,7 @@ type notificationTxAcceptedByMempool struct {
 	isNew bool
 	tx    *btcutil.Tx
 }
+type notificationMixMessage mixing.Message
 
 // Notification control requests
 type notificationRegisterClient wsClient
@@ -459,6 +472,8 @@ type notificationRegisterBlocks wsClient
 type notificationUnregisterBlocks wsClient
 type notificationRegisterNewMempoolTxs wsClient
 type notificationUnregisterNewMempoolTxs wsClient
+type notificationRegisterMixMessages wsClient
+type notificationUnregisterMixMessages wsClient
 type notificationRegisterSpent struct {
 	wsc *wsClient
 	ops []*wire.OutPoint
@@ -491,6 +506,7 @@ func (m *wsNotificationManager) notificationHandler() {
 	// since it is quite a bit more efficient than using the entire struct.
 	blockNotifications := make(map[chan struct{}]*wsClient)
 	txNotifications := make(map[chan struct{}]*wsClient)
+	mixNotifications := make(map[chan struct{}]*wsClient)
 	watchedOutPoints := make(map[wire.OutPoint]map[chan struct{}]*wsClient)
 	watchedAddrs := make(map[string]map[chan struct{}]*wsClient)
 
@@ -538,6 +554,17 @@ out:
 				}
 				m.notifyForTx(watchedOutPoints, watchedAddrs, n.tx, nil)
 				m.notifyRelevantTxAccepted(n.tx, clients)
+
+			case notificationMixMessage:
+				m.notifyMixMessage(mixNotifications, (mixing.Message)(n))
+
+			case *notificationRegisterMixMessages:
+				wsc := (*wsClient)(n)
+				mixNotifications[wsc.quit] = wsc
+
+			case *notificationUnregisterMixMessages:
+				wsc := (*wsClient)(n)
+				delete(mixNotifications, wsc.quit)
 
 			case *notificationRegisterBlocks:
 				wsc := (*wsClient)(n)
@@ -1108,6 +1135,58 @@ func (m *wsNotificationManager) notifyForTxIns(ops map[wire.OutPoint]map[chan st
 				}
 			}
 		}
+	}
+}
+
+// RegisterMixMessages requests notifications to the passed websocket
+// client when mixing messages are accepted to the mixpool.
+func (m *wsNotificationManager) RegisterMixMessages(wsc *wsClient) {
+	select {
+	case m.queueNotification <- (*notificationRegisterMixMessages)(wsc):
+	case <-m.quit:
+	}
+}
+
+// UnregisterMixMessages stops notifications to the websocket client of any
+// newly-accepted mixing messages.
+func (m *wsNotificationManager) UnregisterMixMessages(wsc *wsClient) {
+	select {
+	case m.queueNotification <- (*notificationUnregisterMixMessages)(wsc):
+	case <-m.quit:
+	}
+}
+
+// notifyMixMessage notifies all clients subscribed to mixing messages with
+// the accepted mixing message.
+func (m *wsNotificationManager) notifyMixMessage(clients map[chan struct{}]*wsClient,
+	msg mixing.Message) {
+
+	// Skip notification creation if no clients have requested mix
+	// notifications.
+	if len(clients) == 0 {
+		return
+	}
+
+	// Write write message payload in hex encoding.
+	buf := new(bytes.Buffer)
+	err := msg.BtcEncode(hex.NewEncoder(buf), wire.MixVersion, wire.BaseEncoding)
+	if err != nil {
+		// Should never error; the message has already been processed
+		// and accepted.
+		rpcsLog.Errorf("Failed to serialize accepted mix message for "+
+			"notification: %v", err)
+		return
+	}
+
+	ntfn := btcjson.NewMixMessageNtfn(msg.Command(), buf.String())
+	marshaledJSON, err := btcjson.MarshalCmd("1.0", nil, ntfn)
+	if err != nil {
+		rpcsLog.Errorf("Failed to marshal mix message notification: %v",
+			err)
+		return
+	}
+	for _, client := range clients {
+		client.QueueNotification(marshaledJSON)
 	}
 }
 
@@ -2161,6 +2240,20 @@ func handleNotifyNewTransactions(wsc *wsClient, icmd interface{}) (interface{}, 
 // command extension for websocket connections.
 func handleStopNotifyNewTransactions(wsc *wsClient, icmd interface{}) (interface{}, error) {
 	wsc.server.ntfnMgr.UnregisterNewMempoolTxsUpdates(wsc)
+	return nil, nil
+}
+
+// handleNotifyMixMessages implements the notifymixmessages command extension
+// for websocket connections.
+func handleNotifyMixMessages(wsc *wsClient, icmd interface{}) (interface{}, error) {
+	wsc.server.ntfnMgr.RegisterMixMessages(wsc)
+	return nil, nil
+}
+
+// handleStopNotifyMixMessages implements the stopnotifymixmessages command
+// extension for websocket connections.
+func handleStopNotifyMixMessages(wsc *wsClient, icmd interface{}) (interface{}, error) {
+	wsc.server.ntfnMgr.UnregisterMixMessages(wsc)
 	return nil, nil
 }
 

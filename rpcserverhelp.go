@@ -453,6 +453,19 @@ var helpDescsEnUS = map[string]string{
 	// GetMiningInfoCmd help.
 	"getmininginfo--synopsis": "Returns a JSON object containing mining-related information.",
 
+	// GetMixMessage help.
+	"getmixmessage--synopsis": "Returns a mix message if it is currently accepted by the mixpool.",
+	"getmixmessage-hash":      "Hash of the message being queried",
+	"getmixmessage--result0":  "JSON object describing the message command type and the serialized message in hex encoding.",
+
+	// GetMixMessageResult help.
+	"getmixmessageresult-type":    "Command type of the message",
+	"getmixmessageresult-message": "Serialized message in hex encoding",
+
+	// GetMixPairRequests help.
+	"getmixpairrequests--synopsis": "Returns current set of mixing pair request messages from mixpool.",
+	"getmixpairrequests--result0":  "JSON array of hex-encoded mixing pair request messages.",
+
 	// GetNetworkHashPSCmd help.
 	"getnetworkhashps--synopsis": "Returns the estimated network hashes per second for the block heights provided by the parameters.",
 	"getnetworkhashps-blocks":    "The number of blocks, or -1 for blocks since last difficulty change",
@@ -658,6 +671,14 @@ var helpDescsEnUS = map[string]string{
 	// StopNotifyNewTransactionsCmd help.
 	"stopnotifynewtransactions--synopsis": "Stop sending either a txaccepted or a txacceptedverbose notification when a new transaction is accepted into the mempool.",
 
+	"notifymixmessages--synopsis": "Request notifications for whenever mixing messages are accepted to the mixpool.",
+
+	"stopnotifymixmessages--synopsis": "Cancel registered notifications for whenever mixing messages are accepted to the mixpool.",
+
+	"sendrawmixmessage--synopsis": "Submit a mixing message to the mixpool and broadcast it to the network and all peers",
+	"sendrawmixmessage-message":   "Mixing message serialized and encoded as hex",
+	"sendrawmixmessage-command":   "The wire command name of the message type",
+
 	// NotifyReceivedCmd help.
 	"notifyreceived--synopsis": "Send a recvtx notification when a transaction added to mempool or appears in a newly-attached block contains a txout pkScript sending to any of the passed addresses.\n" +
 		"Matching outpoints are automatically registered for redeemingtx notifications.",
@@ -787,6 +808,8 @@ var rpcResultTypes = map[string][]interface{}{
 	"getinfo":                {(*btcjson.InfoChainResult)(nil)},
 	"getmempoolinfo":         {(*btcjson.GetMempoolInfoResult)(nil)},
 	"getmininginfo":          {(*btcjson.GetMiningInfoResult)(nil)},
+	"getmixmessage":          {(*btcjson.GetMixMessageResult)(nil)},
+	"getmixpairrequests":     {(*[]string)(nil)},
 	"getnettotals":           {(*btcjson.GetNetTotalsResult)(nil)},
 	"getnetworkhashps":       {(*float64)(nil)},
 	"getnodeaddresses":       {(*[]btcjson.GetNodeAddressesResult)(nil)},
@@ -800,6 +823,7 @@ var rpcResultTypes = map[string][]interface{}{
 	"ping":                   nil,
 	"reconsiderblock":        nil,
 	"searchrawtransactions":  {(*string)(nil), (*[]btcjson.SearchRawTransactionsResult)(nil)},
+	"sendrawmixmessage":      nil,
 	"sendrawtransaction":     {(*string)(nil)},
 	"setgenerate":            nil,
 	"signmessagewithprivkey": {(*string)(nil)},
@@ -818,6 +842,8 @@ var rpcResultTypes = map[string][]interface{}{
 	"session":                   {(*btcjson.SessionResult)(nil)},
 	"notifyblocks":              nil,
 	"stopnotifyblocks":          nil,
+	"notifymixmessages":         nil,
+	"stopnotifymixmessages":     nil,
 	"notifynewtransactions":     nil,
 	"stopnotifynewtransactions": nil,
 	"notifyreceived":            nil,
