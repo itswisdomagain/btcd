@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/mixing"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -150,6 +151,9 @@ type NotificationHandlers struct {
 	// NOTE: This is a btcsuite extension ported from
 	// github.com/decred/dcrrpcclient.
 	OnRelevantTxAccepted func(transaction []byte)
+
+	// OnMixMessage is invoked when a mix message is received into the mixpool.
+	OnMixMessage func(msg mixing.Message)
 
 	// OnRescanFinished is invoked after a rescan finishes due to a previous
 	// call to Rescan or RescanEndHeight.  Finished rescans should be
@@ -340,6 +344,22 @@ func (c *Client) handleNotification(ntfn *rawNotification) {
 		}
 
 		c.ntfnHandlers.OnRelevantTxAccepted(transaction)
+
+	// OnMixMessage
+	case btcjson.MixMessageNtfnMethod:
+		// Ignore the notification if the client is not interested in
+		// it.
+		if c.ntfnHandlers.OnMixMessage == nil {
+			return
+		}
+
+		msg, err := parseMixMessageNtfnParams(ntfn.Params)
+		if err != nil {
+			log.Warnf("Received invalid mixmessage notification: %v", err)
+			return
+		}
+
+		c.ntfnHandlers.OnMixMessage(msg)
 
 	// OnRescanFinished
 	case btcjson.RescanFinishedNtfnMethod:
@@ -632,6 +652,30 @@ func parseRelevantTxAcceptedParams(params []json.RawMessage) (transaction []byte
 	}
 
 	return parseHexParam(params[0])
+}
+
+// parseMixMessageNtfnParams parses out the mix message from the parameters of a
+// mixmessage notification.
+func parseMixMessageNtfnParams(params []json.RawMessage) (mixing.Message, error) {
+	if len(params) != 2 {
+		return nil, wrongNumParams(len(params))
+	}
+
+	// Unmarshal first parameter as a string.
+	var command string
+	err := json.Unmarshal(params[0], &command)
+	if err != nil {
+		return nil, err
+	}
+
+	// Unmarshal second parameter as hex.
+	var msgHex string
+	err = json.Unmarshal(params[1], &msgHex)
+	if err != nil {
+		return nil, err
+	}
+
+	return mixMessage(command, msgHex)
 }
 
 // parseChainTxNtfnParams parses out the transaction and optional details about
@@ -1035,6 +1079,54 @@ func (c *Client) NotifyNewTransactionsAsync(verbose bool) FutureNotifyNewTransac
 // NOTE: This is a btcd extension and requires a websocket connection.
 func (c *Client) NotifyNewTransactions(verbose bool) error {
 	return c.NotifyNewTransactionsAsync(verbose).Receive()
+}
+
+// FutureNotifyMixMessagesResult is a future promise to deliver the result of a
+// NotifyMixMessagesAsync RPC invocation (or an applicable error).
+type FutureNotifyMixMessagesResult chan *Response
+
+// Receive waits for the Response promised by the future and returns an error
+// if the registration was not successful.
+func (r FutureNotifyMixMessagesResult) Receive() error {
+	_, err := ReceiveFuture(r)
+	return err
+}
+
+// NotifyMixMessagesAsync returns an instance of a type that can be used to get the
+// result of the RPC at some future time by invoking the Receive function on
+// the returned instance.
+//
+// See NotifyMixMessages for the blocking version and more details.
+//
+// NOTE: This is a btcd extension and requires a websocket connection.
+func (c *Client) NotifyMixMessagesAsync() FutureNotifyMixMessagesResult {
+	// Not supported in HTTP POST mode.
+	if c.config.HTTPPostMode {
+		return newFutureError(ErrWebsocketsRequired)
+	}
+
+	// Ignore the notification if the client is not interested in
+	// notifications.
+	if c.ntfnHandlers == nil {
+		return newNilFutureResult()
+	}
+
+	cmd := btcjson.NewNotifyMixMessagesCmd()
+	return c.SendCmd(cmd)
+}
+
+// NotifyMixMessages registers the client to receive notifications every time a
+// new mix message is accepted to the mixpool. The notifications are delivered
+// to the notification handlers associated with the client.  Calling this
+// function has no effect if there are no notification handlers and will result
+// in an error if the client is configured to run in HTTP POST mode.
+//
+// The notifications delivered as a result of this call will be via
+// OnMixMessage.
+//
+// NOTE: This is a btcd extension and requires a websocket connection.
+func (c *Client) NotifyMixMessages() error {
+	return c.NotifyMixMessagesAsync().Receive()
 }
 
 // FutureNotifyReceivedResult is a future promise to deliver the result of a
