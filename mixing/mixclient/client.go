@@ -35,7 +35,7 @@ import (
 )
 
 // MinPeers is the minimum number of peers required for a mix run to proceed.
-const MinPeers = 4
+const MinPeers = 2
 
 const pairingVersion byte = 1
 
