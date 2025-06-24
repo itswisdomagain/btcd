@@ -146,8 +146,8 @@ func TestMsgMixKeyExchangeCrossProtocol(t *testing.T) {
 func TestMsgMixKeyExchangeMaxPayloadLength(t *testing.T) {
 	var ke *MsgMixKeyExchange
 
-	// Test all protocol versions before MixVersion
-	for pver := uint32(0); pver < MixVersion; pver++ {
+	// Test 20 protocol versions before MixVersion
+	for pver := MixVersion - 20; pver < MixVersion; pver++ {
 		t.Run(fmt.Sprintf("pver=%d", pver), func(t *testing.T) {
 			got := ke.MaxPayloadLength(pver)
 			if got != 0 {

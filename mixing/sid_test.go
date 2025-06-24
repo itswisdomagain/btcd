@@ -69,8 +69,8 @@ func TestSessionID(t *testing.T) {
 
 func TestInvalidSession(t *testing.T) {
 	// Session and PR order from TestSessionID.
-	prs := []chainhash.Hash{{1}, {0}, {3}, {2}, {5}, {4}}
-	sidBytes, _ := hex.DecodeString("695794d3492979b67b51cd79fa330eaae643955ecea866b3e35d7abed2ec621e")
+	prs := []chainhash.Hash{{4}, {5}, {2}, {3}, {0}, {1}}
+	sidBytes, _ := hex.DecodeString("06808fdf9a834ddbcf2ae371e6297e0c3f006a52260372884baa3e6b3ca50456")
 	sid := *(*[32]byte)(sidBytes)
 
 	ke := &wire.MsgMixKeyExchange{

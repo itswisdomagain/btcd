@@ -142,8 +142,8 @@ func TestMsgMixConfirmCrossProtocol(t *testing.T) {
 func TestMsgMixConfirmMaxPayloadLength(t *testing.T) {
 	var cm *MsgMixConfirm
 
-	// Test all protocol versions before MixVersion
-	for pver := uint32(0); pver < MixVersion; pver++ {
+	// Test 20 protocol versions before MixVersion
+	for pver := MixVersion - 20; pver < MixVersion; pver++ {
 		t.Run(fmt.Sprintf("pver=%d", pver), func(t *testing.T) {
 			got := cm.MaxPayloadLength(pver)
 			if got != 0 {

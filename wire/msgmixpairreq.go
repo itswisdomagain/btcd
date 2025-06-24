@@ -403,7 +403,7 @@ func (msg *MsgMixPairReq) MaxPayloadLength(pver uint32) uint32 {
 	}
 
 	// See tests for this calculation.
-	return 8476848
+	return 5207726
 }
 
 // Pub returns the message sender's public key identity.

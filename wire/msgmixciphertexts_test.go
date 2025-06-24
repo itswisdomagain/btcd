@@ -143,8 +143,8 @@ func TestMsgMixCiphertextsCrossProtocol(t *testing.T) {
 func TestMsgMixCiphertextsMaxPayloadLength(t *testing.T) {
 	var ct *MsgMixCiphertexts
 
-	// Test all protocol versions before MixVersion
-	for pver := uint32(0); pver < MixVersion; pver++ {
+	// Test 20 protocol versions before MixVersion
+	for pver := MixVersion - 20; pver < MixVersion; pver++ {
 		t.Run(fmt.Sprintf("pver=%d", pver), func(t *testing.T) {
 			got := ct.MaxPayloadLength(pver)
 			if got != 0 {

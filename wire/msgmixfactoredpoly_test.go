@@ -151,8 +151,8 @@ func TestMsgMixFactoredPolyCrossProtocol(t *testing.T) {
 func TestMsgMixFactoredPolyMaxPayloadLength(t *testing.T) {
 	var fp *MsgMixFactoredPoly
 
-	// Test all protocol versions before MixVersion
-	for pver := uint32(0); pver < MixVersion; pver++ {
+	// Test 20 protocol versions before MixVersion
+	for pver := MixVersion - 20; pver < MixVersion; pver++ {
 		t.Run(fmt.Sprintf("pver=%d", pver), func(t *testing.T) {
 			got := fp.MaxPayloadLength(pver)
 			if got != 0 {

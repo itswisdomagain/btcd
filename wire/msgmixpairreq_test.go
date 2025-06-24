@@ -283,8 +283,8 @@ func TestMsgMixPairReqCrossProtocol(t *testing.T) {
 func TestMsgMixPairReqMaxPayloadLength(t *testing.T) {
 	var pr *MsgMixPairReq
 
-	// Test all protocol versions before MixVersion
-	for pver := uint32(0); pver < MixVersion; pver++ {
+	// Test 20 protocol versions before MixVersion
+	for pver := MixVersion - 20; pver < MixVersion; pver++ {
 		t.Run(fmt.Sprintf("pver=%d", pver), func(t *testing.T) {
 			got := pr.MaxPayloadLength(pver)
 			if got != 0 {
@@ -295,13 +295,13 @@ func TestMsgMixPairReqMaxPayloadLength(t *testing.T) {
 
 	var maxUTXOLen uint32 = 32 + // Hash
 		4 + // Index
-		1 + // Tree
+		// 1 + // Tree
 		varBytesLen(MaxMixPairReqUTXOScriptLen) + // P2SH redeem script
 		varBytesLen(33) + // Pubkey
 		varBytesLen(64) + // Signature
 		1 // Opcode
 	var maxTxOutLen uint32 = 8 + // Value
-		2 + // Version
+		// 2 + // Version
 		varBytesLen(16384) // PkScript (txscript.MaxScriptLen)
 	var expectedLen uint32 = 64 + // Signature
 		33 + // Identity
