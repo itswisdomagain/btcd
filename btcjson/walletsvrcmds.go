@@ -559,6 +559,34 @@ func NewLockUnspentCmd(unlock bool, transactions []TransactionInput) *LockUnspen
 	}
 }
 
+// MixAccountCmd defines the mixaccount JSON-RPC command.
+type MixAccountCmd struct {
+	FeeRate *float64 // In BTC/Kb
+}
+
+// NewMixAccountCmd returns a new instance which can be used to issue a
+// mixaccount JSON-RPC command.
+func NewMixAccountCmd(feeRate *float64) *MixAccountCmd {
+	return &MixAccountCmd{
+		FeeRate: feeRate,
+	}
+}
+
+// MixOutputCmd defines the mixoutput JSON-RPC command.
+type MixOutputCmd struct {
+	Outpoint string   `json:"outpoint"`
+	FeeRate  *float64 // In BTC/Kb
+}
+
+// NewMixOutputCmd returns a new instance which can be used to issue a
+// mixoutput JSON-RPC command.
+func NewMixOutputCmd(outpoint string, feeRate *float64) *MixOutputCmd {
+	return &MixOutputCmd{
+		Outpoint: outpoint,
+		FeeRate:  feeRate,
+	}
+}
+
 // MoveCmd defines the move JSON-RPC command.
 type MoveCmd struct {
 	FromAccount string
@@ -1128,6 +1156,8 @@ func init() {
 	MustRegisterCmd("listunspent", (*ListUnspentCmd)(nil), flags)
 	MustRegisterCmd("loadwallet", (*LoadWalletCmd)(nil), flags)
 	MustRegisterCmd("lockunspent", (*LockUnspentCmd)(nil), flags)
+	MustRegisterCmd("mixaccount", (*MixAccountCmd)(nil), flags)
+	MustRegisterCmd("mixoutput", (*MixOutputCmd)(nil), flags)
 	MustRegisterCmd("move", (*MoveCmd)(nil), flags)
 	MustRegisterCmd("sendfrom", (*SendFromCmd)(nil), flags)
 	MustRegisterCmd("sendmany", (*SendManyCmd)(nil), flags)
