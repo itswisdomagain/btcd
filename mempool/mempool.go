@@ -109,6 +109,11 @@ type Config struct {
 	// FeeEstimator provides a feeEstimator. If it is not nil, the mempool
 	// records all new transactions it observes into the feeEstimator.
 	FeeEstimator *FeeEstimator
+
+	// NonMixSpendsPairRequest returns whether the transaction spends outputs
+	// described by a currently-accepted pair request message in the
+	// mixpool while not being the confirmed mix tx for any session.
+	NonMixSpendsPairRequest func(tx *btcutil.Tx) bool
 }
 
 // Policy houses the policy (configuration parameters) which is used to
@@ -1381,6 +1386,14 @@ func (mp *TxPool) checkMempoolAcceptance(tx *btcutil.Tx,
 			txHash)
 
 		return nil, txRuleError(wire.RejectInvalid, str)
+	}
+
+	// Don't allow non-mix transactions which spend current pair requests
+	// in the mixpool.
+	if mp.cfg.NonMixSpendsPairRequest != nil && mp.cfg.NonMixSpendsPairRequest(tx) {
+		str := fmt.Sprintf("non-mix transaction %v spends current mixpool "+
+			"pair request UTXOs", txHash)
+		return nil, txRuleError(wire.RejectMixpoolDoubleSpend, str)
 	}
 
 	// Get the current height of the main chain. A standalone transaction

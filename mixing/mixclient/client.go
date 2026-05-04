@@ -1,4 +1,4 @@
-// Copyright (c) 2023-2024 The Decred developers
+// Copyright (c) 2023-2025 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -35,7 +35,8 @@ import (
 )
 
 // MinPeers is the minimum number of peers required for a mix run to proceed.
-const MinPeers = 2
+// This value may change over time and is not a stable part of the package API.
+const MinPeers = mixing.MinPeers
 
 const pairingVersion byte = 1
 
@@ -55,6 +56,7 @@ func expiredPRErr(pr *wire.MsgMixPairReq) error {
 var (
 	errOnlyKEsBroadcasted = errors.New("session ended without mix occurring")
 	errTriggeredBlame     = errors.New("blame required")
+	errNoActiveLocalPeers = errors.New("no active local peers")
 )
 
 const (
@@ -214,6 +216,34 @@ type peer struct {
 	// Whether this peer represents a remote peer created from revealed secrets;
 	// used during blaming.
 	remote bool
+
+	// Signals a canceled local peer.
+	done <-chan struct{}
+}
+
+// isRemoteOrCanceled returns true if the peer represents a remote peer or a
+// local client request that has been canceled and is no longer being served.
+func (p *peer) isRemoteOrCanceled() bool {
+	if p.remote {
+		return true
+	}
+	select {
+	case <-p.done:
+		return true
+	default:
+	}
+
+	return false
+}
+
+// sendRes sends a result to the peer's result channel without blocking.
+func (p *peer) sendRes(err error) {
+	// p.res is buffered.  If the write is blocked, we have already served
+	// this peer or sent another error.
+	select {
+	case p.res <- err:
+	default:
+	}
 }
 
 // cloneLocalPeer creates a new peer instance representing a local peer
@@ -339,8 +369,9 @@ type Client struct {
 	atomicPRFlags  uint32
 	atomicStopping uint32
 
-	wallet  Wallet
-	mixpool *mixpool.Pool
+	wallet   Wallet
+	mixpool  *mixpool.Pool
+	observer *mixpool.Observer
 
 	// Pending and active sessions and peers (both local and, when
 	// blaming, remote).
@@ -376,10 +407,12 @@ func NewClient(w Wallet) *Client {
 	}
 
 	height, _ := w.BestBlock()
+	mixPool := w.Mixpool()
 	return &Client{
 		atomicPRFlags:   uint32(prFlags),
 		wallet:          w,
-		mixpool:         w.Mixpool(),
+		mixpool:         mixPool,
+		observer:        mixPool.Observer(),
 		pendingPairings: make(map[string]*pendingPairing),
 		height:          height,
 		warming:         make(chan struct{}),
@@ -450,10 +483,7 @@ func (c *Client) Run(ctx context.Context) error {
 	c.mu.Lock()
 	for _, p := range c.pendingPairings {
 		for _, lp := range p.localPeers {
-			select {
-			case lp.res <- ErrStopping:
-			default:
-			}
+			lp.sendRes(ErrStopping)
 		}
 	}
 	c.mu.Unlock()
@@ -482,11 +512,13 @@ func (c *Client) peerWorker(ctx context.Context) error {
 
 // forLocalPeers is a helper method that runs a callback on all local peers of
 // a session run.  The calls are executed concurrently on peer worker goroutines.
+// This method will error if there are no uncanceled local peers to perform the
+// action on.
 func (c *Client) forLocalPeers(ctx context.Context, s *sessionRun, f func(p *peer) error) error {
 	resChans := make([]chan error, 0, len(s.peers))
 
 	for _, p := range s.peers {
-		if p.remote {
+		if p.isRemoteOrCanceled() {
 			continue
 		}
 
@@ -504,6 +536,10 @@ func (c *Client) forLocalPeers(ctx context.Context, s *sessionRun, f func(p *pee
 		}
 	}
 
+	if len(resChans) == 0 {
+		return errNoActiveLocalPeers
+	}
+
 	var errs = make([]error, len(resChans))
 	for i := range errs {
 		errs[i] = <-resChans[i]
@@ -518,12 +554,15 @@ type delayedMsg struct {
 	p        *peer
 }
 
+// sendLocalPeerMsgs sends messages matching the message mask from all
+// uncanceled local peers.  Errors if all there are no local peers or if all
+// local peers have been canceled.
 func (c *Client) sendLocalPeerMsgs(ctx context.Context, deadline time.Time, s *sessionRun, msgMask uint) error {
 	now := time.Now()
 
 	msgs := make([]delayedMsg, 0, len(s.peers)*bits.OnesCount(msgMask))
 	for _, p := range s.peers {
-		if p.remote {
+		if p.isRemoteOrCanceled() {
 			continue
 		}
 		msg := delayedMsg{
@@ -564,6 +603,9 @@ func (c *Client) sendLocalPeerMsgs(ctx context.Context, deadline time.Time, s *s
 			msg.m = p.rs
 			msgs = append(msgs, msg)
 		}
+	}
+	if len(msgs) == 0 && msgMask != 0 {
+		return errNoActiveLocalPeers
 	}
 	sort.SliceStable(msgs, func(i, j int) bool {
 		return msgs[i].sendTime.Before(msgs[j].sendTime)
@@ -643,7 +685,7 @@ func (c *Client) waitForEpoch(ctx context.Context) (time.Time, error) {
 		if !timer.Stop() {
 			<-timer.C
 		}
-		return epoch, nil
+		return time.Now(), nil
 	case <-timer.C:
 		return epoch, nil
 	}
@@ -725,6 +767,48 @@ func (p *peer) signAndSubmit(deadline time.Time, m mixing.Message) error {
 	return p.submit(deadline, m)
 }
 
+func (p *peer) genDicemixKeys() error {
+	p.ke = nil
+
+	// Generate a new PRNG seed
+	rand.Read(p.prngSeed[:])
+	p.prng = chacha20prng.New(p.prngSeed[:], 0)
+
+	// Generate fresh keys from this run's PRNG
+	kx, err := mixing.NewKX(p.prng)
+	if err != nil {
+		return err
+	}
+	p.kx = kx
+
+	// Generate fresh SR messages.
+	// These must not be created from the PRNG; the Go
+	// standard library function is not guaranteed to read
+	// the same byte count in all versions.
+	p.srMsg = make([]*big.Int, p.pr.MessageCount)
+	for i := range p.srMsg {
+		p.srMsg[i] = rand.BigInt(mixing.F)
+	}
+
+	// Generate fresh DC messages
+	p.dcMsg, err = p.coinjoin.gen()
+	if err != nil {
+		return err
+	}
+	if len(p.dcMsg) != int(p.pr.MessageCount) {
+		return errors.New("gen returned wrong message count")
+	}
+	for _, m := range p.dcMsg {
+		if len(m) != msize {
+			err := fmt.Errorf("gen returned bad message "+
+				"length [%v != %v]", len(m), msize)
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (c *Client) newPendingPairing(pairing []byte) *pendingPairing {
 	return &pendingPairing{
 		localPeers: make(map[identity]*peer),
@@ -786,6 +870,8 @@ func (c *Client) epochTicker(ctx context.Context) error {
 	close(c.warming)
 	c.mu.Unlock()
 
+	prevEpoch := firstEpoch
+
 	for {
 		epoch, err := c.waitForEpoch(ctx)
 		if err != nil {
@@ -793,6 +879,12 @@ func (c *Client) epochTicker(ctx context.Context) error {
 		}
 
 		c.log("Epoch tick")
+
+		err = c.observer.CheckPrevEpoch(uint64(prevEpoch.Unix()))
+		if err != nil {
+			return err
+		}
+		prevEpoch = epoch
 
 		// Wait for any previous pairSession calls to timeout if they
 		// have not yet formed a session before the next epoch tick.
@@ -810,6 +902,11 @@ func (c *Client) epochTicker(ctx context.Context) error {
 
 		for _, p := range c.pendingPairings {
 			prs := c.mixpool.CompatiblePRs(p.pairing)
+
+			// Exclude identities who have timed out too many
+			// times.
+			prs = c.observer.ExcludePRs(prs)
+
 			prsMap := make(map[identity]struct{})
 			for _, pr := range prs {
 				prsMap[pr.Identity] = struct{}{}
@@ -824,7 +921,7 @@ func (c *Client) epochTicker(ctx context.Context) error {
 			localPeers := make(map[identity]*peer)
 			for id, peer := range p.localPeers {
 				if _, ok := prsMap[id]; ok {
-					localPeers[id] = peer.cloneLocalPeer(true)
+					localPeers[id] = peer.cloneLocalPeer(false)
 				}
 			}
 
@@ -872,6 +969,7 @@ func (c *Client) Dicemix(ctx context.Context, cj *CoinJoin) error {
 		priv:     priv,
 		id:       (*[33]byte)(pub.SerializeCompressed()),
 		coinjoin: cj,
+		done:     ctx.Done(),
 	}
 
 	err = c.prDelay(ctx, p)
@@ -897,8 +995,19 @@ func (c *Client) Dicemix(ctx context.Context, cj *CoinJoin) error {
 	}
 	p.pr = pr
 
+	err = p.genDicemixKeys()
+	if err != nil {
+		return err
+	}
+
 	c.logf("Created local peer id=%x PR=%s", p.id[:], p.pr.Hash())
 
+	// Add peer to pending requests.
+	//
+	// Local peers are not removed from the pending pairings maps when
+	// this method returns if this client request is canceled.  Peers are
+	// garbage collected later if they have been unresponsive in an epoch
+	// or when their PR expires.
 	c.mu.Lock()
 	pending := c.pendingPairings[string(pairingID)]
 	if pending == nil {
@@ -920,7 +1029,12 @@ func (c *Client) Dicemix(ctx context.Context, cj *CoinJoin) error {
 		return err
 	}
 
-	return <-p.res
+	select {
+	case res := <-p.res:
+		return res
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ExpireMessages will cause the removal all mixpool messages and sessions
@@ -945,14 +1059,7 @@ func (c *Client) expireMessages() {
 			prHash := peer.pr.Hash()
 			if !c.mixpool.HaveMessage(&prHash) {
 				delete(p.localPeers, id)
-				// p.res is buffered.  If the write is
-				// blocked, we have already served this peer
-				// or sent another error.
-				select {
-				case peer.res <- expiredPRErr(peer.pr):
-				default:
-				}
-
+				peer.sendRes(expiredPRErr(peer.pr))
 			}
 		}
 		if len(p.localPeers) == 0 {
@@ -984,6 +1091,7 @@ func (c *Client) pairSession(ctx context.Context, ps *pairedSessions, prs []*wir
 	// unsuccessful or only some peers were included.
 	var mixedSession *sessionRun
 	var unresponsive []*wire.MsgMixPairReq
+	var revealedSecrets bool
 	defer func() {
 		c.removeUnresponsiveDuringEpoch(unresponsive, unixEpoch)
 
@@ -1007,18 +1115,35 @@ func (c *Client) pairSession(ctx context.Context, ps *pairedSessions, prs []*wir
 			return
 		}
 
+		addPending := make([]*peer, 0, len(ps.localPeers))
+		for _, p := range ps.localPeers {
+			prHash := p.pr.Hash()
+			if !c.mixpool.HaveMessage(&prHash) {
+				continue
+			}
+			p2 := p.cloneLocalPeer(revealedSecrets)
+			if revealedSecrets {
+				err := p2.genDicemixKeys()
+				if err != nil {
+					p2.sendRes(err)
+					continue
+				}
+			}
+			addPending = append(addPending, p2)
+		}
+
 		c.mu.Lock()
 		pendingPairing := c.pendingPairings[string(ps.pairing)]
 		if pendingPairing == nil {
 			pendingPairing = c.newPendingPairing(ps.pairing)
 			c.pendingPairings[string(ps.pairing)] = pendingPairing
-		} else {
-			for id, p := range ps.localPeers {
-				prHash := p.pr.Hash()
-				if c.mixpool.HaveMessage(&prHash) {
-					pendingPairing.localPeers[id] = p.cloneLocalPeer(true)
-				}
+		}
+		for _, p := range addPending {
+			prHash := p.pr.Hash()
+			if !c.mixpool.HaveMessage(&prHash) {
+				continue
 			}
+			pendingPairing.localPeers[*p.id] = p
 		}
 		c.mu.Unlock()
 	}()
@@ -1030,10 +1155,11 @@ func (c *Client) pairSession(ctx context.Context, ps *pairedSessions, prs []*wir
 	ps.runs = append(ps.runs, sessionRun{
 		sid:      sid,
 		prs:      prs,
-		freshGen: true,
+		freshGen: false,
 		mcounts:  make([]uint32, 0, len(prs)),
 	})
 	newRun := &ps.runs[len(ps.runs)-1]
+	altsesCounts := make(map[[32]byte]int)
 
 	for {
 		if newRun != nil {
@@ -1091,8 +1217,8 @@ func (c *Client) pairSession(ctx context.Context, ps *pairedSessions, prs []*wir
 		var altses *alternateSession
 		var sizeLimitedErr *sizeLimited
 		var blamed blamedIdentities
-		var revealedSecrets bool
 		var requirePeerAgreement bool
+		revealedSecrets = false
 		switch {
 		case errors.Is(err, errOnlyKEsBroadcasted):
 			// When only KEs are broadcasted, the session was not viable
@@ -1101,18 +1227,38 @@ func (c *Client) pairSession(ctx context.Context, ps *pairedSessions, prs []*wir
 			return
 
 		case errors.As(err, &altses):
-			// If this errored or has too few peers, keep
-			// retrying previous attempts until next epoch,
-			// instead of just going away.
 			if altses.err != nil {
 				r.logf("Unable to recreate session: %v", altses.err)
-				ps.deadlines.start(time.Now())
-				continue
-			}
-
-			if r.sid != altses.sid {
+			} else if r.sid != altses.sid {
 				r.logf("Recreating as session %x (pairid=%x)", altses.sid, ps.pairing)
 				unresponsive = append(unresponsive, altses.unresponsive...)
+			} else {
+				r.logf("Alternate session matches current run (pairid=%x)", ps.pairing)
+				// When the alternate session matches the
+				// currently tried one, assume peer agreement
+				// is reached.  If the same missing peers
+				// continue to be absent during the next run,
+				// they will be blamed for timeout, rather
+				// than incrementing the altses counter and
+				// disrupting the mix for all peers.
+				ps.peerAgreement = true
+				ps.peerAgreementRunIdx = r.idx
+			}
+			// Limit total alternateSession reattempts to prevent
+			// endlessly looping on erroring reforming sessions if
+			// no peer agreement was ever established.  This check
+			// also works when the error is non-nil (sid will be
+			// all zeros).
+			altsesCounts[altses.sid]++
+			if altsesCounts[altses.sid] > 2 {
+				r.logf("Aborting alternate session forming")
+				return
+			}
+			if altses.err != nil {
+				// Continue run attempts in case peer
+				// agreement can be established.
+				ps.deadlines.start(time.Now())
+				continue
 			}
 
 			// Required minimum run index is not incremented for
@@ -1154,6 +1300,9 @@ func (c *Client) pairSession(ctx context.Context, ps *pairedSessions, prs []*wir
 			// err = nil would be an ineffectual assignment here;
 			// blamed is non-nil and the following if block will
 			// always be entered.
+
+		case errors.Is(err, errNoActiveLocalPeers):
+			return
 		}
 
 		if blamed != nil || errors.As(err, &blamed) {
@@ -1303,43 +1452,7 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 	freshGen := sesRun.freshGen
 	err = c.forLocalPeers(ctx, sesRun, func(p *peer) error {
 		if freshGen {
-			p.ke = nil
-
-			// Generate a new PRNG seed
-			rand.Read(p.prngSeed[:])
-			p.prng = chacha20prng.New(p.prngSeed[:], 0)
-
-			// Generate fresh keys from this run's PRNG
-			kx, err := mixing.NewKX(p.prng)
-			if err != nil {
-				return err
-			}
-			p.kx = kx
-
-			// Generate fresh SR messages.
-			// These must not be created from the PRNG; the Go
-			// standard library function is not guaranteed to read
-			// the same byte count in all versions.
-			p.srMsg = make([]*big.Int, p.pr.MessageCount)
-			for i := range p.srMsg {
-				p.srMsg[i] = rand.BigInt(mixing.F)
-			}
-
-			// Generate fresh DC messages
-			p.dcMsg, err = p.coinjoin.gen()
-			if err != nil {
-				return err
-			}
-			if len(p.dcMsg) != int(p.pr.MessageCount) {
-				return errors.New("Gen returned wrong message count")
-			}
-			for _, m := range p.dcMsg {
-				if len(m) != msize {
-					err := fmt.Errorf("Gen returned bad message "+
-						"length [%v != %v]", len(m), msize)
-					return err
-				}
-			}
+			p.genDicemixKeys()
 		}
 
 		if p.ke == nil {
@@ -1375,7 +1488,7 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return sesRun, err
 	}
 	sesRun.freshGen = false
 	err = c.sendLocalPeerMsgs(ctx, ps.deadlines.recvKE, sesRun, msgKE)
@@ -1418,18 +1531,6 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 	// are immediately excluded.
 	completedSesRun, err := c.completePairing(ctx, ps)
 	if err != nil {
-		// Alternate session may need to be attempted.  Do not form an
-		// alternate session if we are about to enter into the next
-		// epoch.  The session forming will be performed by a new
-		// goroutine started by the epoch ticker, possibly with
-		// additional PRs.
-		nextEpoch := ps.epoch.Add(c.epoch)
-		if time.Now().Add(timeoutDuration).After(nextEpoch) {
-			c.logf("Aborting session %x after %d attempts",
-				sesRun.sid[:], len(ps.runs))
-			return sesRun, errOnlyKEsBroadcasted
-		}
-
 		// If peer agreement was never established, alternate sessions
 		// based on the seen PRs must be formed.
 		if !ps.peerAgreement {
@@ -1516,10 +1617,6 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 	}
 
 	// Remove paired local peers from pending pairings.
-	//
-	// XXX might want to keep these instead of racing to add them back if
-	// this mix doesn't run to completion, and we start next epoch without
-	// some of our own peers.
 	c.mu.Lock()
 	if pending := c.pendingPairings[string(ps.pairing)]; pending != nil {
 		for id := range sesRun.localPeers {
@@ -1841,7 +1938,7 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 			return errTriggeredBlame
 		}
 		if err != nil {
-			p.res <- err
+			p.sendRes(err)
 			return err
 		}
 
@@ -1925,10 +2022,7 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 	}
 
 	c.forLocalPeers(ctx, sesRun, func(p *peer) error {
-		select {
-		case p.res <- nil:
-		default:
-		}
+		p.sendRes(nil)
 		return nil
 	})
 
@@ -2196,8 +2290,8 @@ func (c *Client) alternateSession(ps *pairedSessions, prs []*wire.MsgMixPairReq)
 		}
 		pr := prsByHash[prHashByIdentity[ke.Identity]]
 		if pr == nil {
-			err := fmt.Errorf("Missing PR %s by %x, but have their KE %s",
-				prHashByIdentity[ke.Identity], ke.Identity[:], ke.Hash())
+			err := fmt.Errorf("missing PR by %x, but have their KE %s",
+				ke.Identity[:], ke.Hash())
 			c.log(err)
 			continue
 		}
@@ -2348,7 +2442,7 @@ func excludeBlamed(prevRun *sessionRun, epoch uint64, blamed blamedIdentities, r
 		if _, ok := blamedMap[*p.id]; ok {
 			// Should never happen except during tests.
 			if !p.remote {
-				p.res <- &testPeerBlamedError{p}
+				p.sendRes(&testPeerBlamedError{p})
 			}
 
 			continue

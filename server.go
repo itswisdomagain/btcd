@@ -236,6 +236,7 @@ type server struct {
 	chain                *blockchain.BlockChain
 	txMemPool            *mempool.TxPool
 	mixMsgPool           *mixpool.Pool
+	mixObserver          *mixpool.Observer
 	cpuMiner             *cpuminer.CPUMiner
 	modifyRebroadcastInv chan interface{}
 	p2pDowngrader        *peer.P2PDowngrader
@@ -2769,6 +2770,15 @@ func (s *server) Start() {
 	if cfg.Generate {
 		s.cpuMiner.Start()
 	}
+
+	// Uncomment the following lines if the need arises to flag and monitor
+	// UTXOs as malicious.
+	// // Start the misbehaving mix peer observer.
+	// s.wg.Add(1)
+	// go func() {
+	// 	s.mixObserver.Run(context.TODO())
+	// 	s.wg.Done()
+	// }()
 }
 
 // Stop gracefully shuts down the server by stopping and disconnecting all
@@ -3232,11 +3242,15 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		HashCache:          s.hashCache,
 		AddrIndex:          s.addrIndex,
 		FeeEstimator:       s.feeEstimator,
+		NonMixSpendsPairRequest: func(tx *btcutil.Tx) bool {
+			return s.mixMsgPool.NonMixSpendsPR(tx.MsgTx())
+		},
 	}
 	s.txMemPool = mempool.New(&txC)
 
 	mixchain := &mixpoolChain{s.chain, s.txMemPool}
 	s.mixMsgPool = mixpool.NewPool(mixchain)
+	s.mixObserver = s.mixMsgPool.Observer()
 
 	s.syncManager, err = netsync.New(&netsync.Config{
 		PeerNotifier:       &s,

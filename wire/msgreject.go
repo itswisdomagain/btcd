@@ -17,26 +17,28 @@ type RejectCode uint8
 
 // These constants define the various supported reject codes.
 const (
-	RejectMalformed       RejectCode = 0x01
-	RejectInvalid         RejectCode = 0x10
-	RejectObsolete        RejectCode = 0x11
-	RejectDuplicate       RejectCode = 0x12
-	RejectNonstandard     RejectCode = 0x40
-	RejectDust            RejectCode = 0x41
-	RejectInsufficientFee RejectCode = 0x42
-	RejectCheckpoint      RejectCode = 0x43
+	RejectMalformed          RejectCode = 0x01
+	RejectInvalid            RejectCode = 0x10
+	RejectObsolete           RejectCode = 0x11
+	RejectDuplicate          RejectCode = 0x12
+	RejectNonstandard        RejectCode = 0x40
+	RejectDust               RejectCode = 0x41
+	RejectInsufficientFee    RejectCode = 0x42
+	RejectCheckpoint         RejectCode = 0x43
+	RejectMixpoolDoubleSpend RejectCode = 0x44
 )
 
 // Map of reject codes back strings for pretty printing.
 var rejectCodeStrings = map[RejectCode]string{
-	RejectMalformed:       "REJECT_MALFORMED",
-	RejectInvalid:         "REJECT_INVALID",
-	RejectObsolete:        "REJECT_OBSOLETE",
-	RejectDuplicate:       "REJECT_DUPLICATE",
-	RejectNonstandard:     "REJECT_NONSTANDARD",
-	RejectDust:            "REJECT_DUST",
-	RejectInsufficientFee: "REJECT_INSUFFICIENTFEE",
-	RejectCheckpoint:      "REJECT_CHECKPOINT",
+	RejectMalformed:          "REJECT_MALFORMED",
+	RejectInvalid:            "REJECT_INVALID",
+	RejectObsolete:           "REJECT_OBSOLETE",
+	RejectDuplicate:          "REJECT_DUPLICATE",
+	RejectNonstandard:        "REJECT_NONSTANDARD",
+	RejectDust:               "REJECT_DUST",
+	RejectInsufficientFee:    "REJECT_INSUFFICIENTFEE",
+	RejectCheckpoint:         "REJECT_CHECKPOINT",
+	RejectMixpoolDoubleSpend: "REJECT_MIXPOOL_DOUPLE_SPEND",
 }
 
 // String returns the RejectCode in human-readable form.
