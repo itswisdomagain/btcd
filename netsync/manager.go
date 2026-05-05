@@ -1,4 +1,5 @@
 // Copyright (c) 2013-2017 The btcsuite developers
+// Copyright (c) 2015-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -759,7 +760,8 @@ func (sm *SyncManager) handleMixMsg(mmsg *mixMsg) error {
 		return nil
 	}
 
-	accepted, err := sm.mixPool.AcceptMessage(mmsg.msg)
+	source := mixpool.Uint64Source(peer.ID())
+	accepted, err := sm.mixPool.AcceptMessage(mmsg.msg, source)
 
 	// Remove message from request maps. Either the mixpool already knows
 	// about it and as such we shouldn't have any more instances of trying

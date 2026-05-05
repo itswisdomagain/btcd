@@ -1,4 +1,4 @@
-// Copyright (c) 2024 The Decred developers
+// Copyright (c) 2024-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -44,7 +44,8 @@ const (
 
 func newTestClient(w *testWallet, logger btclog.Logger) *Client {
 	c := NewClient(w)
-	c.testTickC = make(chan struct{})
+	c.testWaiting = make(chan struct{})
+	c.testTickC = make(chan time.Time)
 	c.SetLogger(logger)
 	return c
 }
@@ -113,7 +114,7 @@ func (w *testWallet) SignInput(tx *wire.MsgTx, index int, prevScript []byte) err
 }
 
 func (w *testWallet) SubmitMixMessage(ctx context.Context, msg mixing.Message) error {
-	_, err := w.mixpool.AcceptMessage(msg)
+	_, err := w.mixpool.AcceptMessage(msg, mixpool.ZeroSource)
 	return err
 }
 
@@ -222,7 +223,8 @@ func TestHonest(t *testing.T) {
 		<-doneRun
 	}()
 
-	c.testTick()
+	<-c.testWaiting
+	c.testTick(time.Now().Truncate(time.Second))
 
 	var g errgroup.Group
 	for i := range peers {
@@ -234,7 +236,8 @@ func TestHonest(t *testing.T) {
 
 	go func() {
 		for {
-			c.testTick()
+			<-c.testWaiting
+			c.testTick(time.Now().Truncate(time.Second))
 			select {
 			case <-ctx.Done():
 				return
@@ -328,8 +331,11 @@ func testDisruption(t *testing.T, misbehavingID *identity, h hook, f hookFunc) {
 	}()
 
 	testTick := func() {
-		c.testTick()
-		c2.testTick()
+		<-c.testWaiting
+		<-c2.testWaiting
+		t := time.Now().Truncate(time.Second)
+		c.testTick(t)
+		c2.testTick(t)
 	}
 	testTick()
 

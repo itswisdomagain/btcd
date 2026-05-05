@@ -18,7 +18,7 @@ require (
 	github.com/decred/dcrd/crypto/rand v1.0.1
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
 	github.com/decred/dcrd/lru v1.0.0
-	github.com/decred/dcrd/mixing v0.6.0
+	github.com/decred/dcrd/mixing v0.7.2
 	github.com/decred/dcrd/txscript/v4 v4.1.2
 	github.com/gorilla/websocket v1.5.1
 	github.com/jessevdk/go-flags v1.5.0
@@ -40,7 +40,7 @@ require (
 	github.com/decred/dcrd/crypto/ripemd160 v1.0.2 // indirect
 	github.com/decred/dcrd/dcrec v1.0.1 // indirect
 	github.com/decred/dcrd/dcrec/edwards/v2 v2.0.4 // indirect
-	github.com/decred/dcrd/wire v1.7.1 // indirect
+	github.com/decred/dcrd/wire v1.7.5 // indirect
 	github.com/decred/slog v1.2.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/kkdai/bstream v0.0.0-20161212061736-f391b8402d23 // indirect

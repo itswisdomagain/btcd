@@ -1,4 +1,4 @@
-// Copyright (c) 2023-2025 The Decred developers
+// Copyright (c) 2023-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -394,8 +394,9 @@ type Client struct {
 
 	logger btclog.Logger
 
-	testTickC chan struct{}
-	testHooks map[hook]hookFunc
+	testWaiting chan struct{}
+	testTickC   chan time.Time
+	testHooks   map[hook]hookFunc
 }
 
 // NewClient creates a wallet's mixing client manager.
@@ -417,7 +418,7 @@ func NewClient(w Wallet) *Client {
 		height:          height,
 		warming:         make(chan struct{}),
 		workQueue:       make(chan *queueWork, runtime.NumCPU()),
-		blake256Hasher:  blake256.New(),
+		blake256Hasher:  blake256.NewHasher256(),
 		epoch:           w.Mixpool().Epoch(),
 		stopping:        make(chan struct{}),
 	}
@@ -668,26 +669,28 @@ func (c *Client) waitForEpoch(ctx context.Context) (time.Time, error) {
 	now := time.Now().UTC()
 	epoch := now.Truncate(c.epoch).Add(c.epoch)
 	duration := epoch.Sub(now)
-	timer := time.NewTimer(duration)
-	select {
-	case <-ctx.Done():
-		if !timer.Stop() {
-			<-timer.C
+
+	testWaiting := c.testWaiting
+	var timerC, testTickC <-chan time.Time
+	if testWaiting == nil {
+		timerC = time.After(duration)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return epoch, ctx.Err()
+		case <-c.stopping:
+			c.runWG.Wait()
+			return epoch, ErrStopping
+		case <-timerC:
+			return epoch, nil
+		case testWaiting <- struct{}{}:
+			testWaiting = nil
+			testTickC = c.testTickC
+		case testEpoch := <-testTickC:
+			return testEpoch, nil
 		}
-		return epoch, ctx.Err()
-	case <-c.stopping:
-		if !timer.Stop() {
-			<-timer.C
-		}
-		c.runWG.Wait()
-		return epoch, ErrStopping
-	case <-c.testTickC:
-		if !timer.Stop() {
-			<-timer.C
-		}
-		return time.Now(), nil
-	case <-timer.C:
-		return epoch, nil
 	}
 }
 
@@ -700,6 +703,11 @@ func (p *peer) msgJitter() time.Duration {
 // small amount of jitter is added to help avoid timing deanonymization
 // attacks.
 func (c *Client) prDelay(ctx context.Context, p *peer) error {
+	// No delay in tests.
+	if c.testTickC != nil {
+		return nil
+	}
+
 	now := time.Now().UTC()
 	epoch := now.Truncate(c.epoch).Add(c.epoch)
 	sendBefore := epoch.Add(-timeoutDuration - maxJitter)
@@ -717,18 +725,13 @@ func (c *Client) prDelay(ctx context.Context, p *peer) error {
 			<-timer.C
 		}
 		return ctx.Err()
-	case <-c.testTickC:
-		if !timer.Stop() {
-			<-timer.C
-		}
-		return nil
 	case <-timer.C:
 		return nil
 	}
 }
 
-func (c *Client) testTick() {
-	c.testTickC <- struct{}{}
+func (c *Client) testTick(t time.Time) {
+	c.testTickC <- t
 }
 
 func (c *Client) testHook(stage hook, ps *pairedSessions, s *sessionRun, p *peer) {
@@ -858,12 +861,23 @@ func (c *Client) epochTicker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	timerC := time.After(timeoutDuration + 2*time.Second)
+	testWaiting := c.testWaiting
+	var testTickC <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return err
 
-	select {
-	case <-time.After(timeoutDuration + 2*time.Second):
-	case <-c.testTickC:
-	case <-ctx.Done():
-		return err
+		case <-timerC:
+
+		case testWaiting <- struct{}{}:
+			testWaiting = nil
+			testTickC = c.testTickC
+			continue
+		case <-testTickC:
+		}
+		break
 	}
 	c.mu.Lock()
 	c.removeUnresponsiveDuringEpoch(prevPRs, uint64(firstEpoch.Unix()))
@@ -1819,8 +1833,23 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 
 	// Recover roots
 	vs := make([][][]byte, 0, len(prs))
-	for _, sr := range srs {
+SRs:
+	for i, sr := range srs {
+		if uint32(len(sr.DCMix)) != sesRun.mcounts[i] {
+			blamed = append(blamed, sr.Identity)
+			continue
+		}
+		for _, srMixVec := range sr.DCMix {
+			if uint32(len(srMixVec)) != sesRun.mtot {
+				blamed = append(blamed, sr.Identity)
+				continue SRs
+			}
+		}
 		vs = append(vs, sr.DCMix...)
+	}
+	if len(blamed) != 0 {
+		sesRun.logf("blaming %x during run (wrong SR DC-mix dimensions)", []identity(blamed))
+		return sesRun, blamed
 	}
 	powerSums := mixing.AddVectors(mixing.IntVectorsFromBytes(vs)...)
 	coeffs := mixing.Coefficients(powerSums)
@@ -1903,17 +1932,22 @@ func (c *Client) run(ctx context.Context, ps *pairedSessions) (sesRun *sessionRu
 
 	// Solve XOR dc-net
 	dcVecs := make([]mixing.Vec, 0, sesRun.mtot)
+DCs:
 	for i, dc := range dcs {
 		if uint32(len(dc.DCNet)) != sesRun.mcounts[i] {
 			blamed = append(blamed, dc.Identity)
 			continue
 		}
 		for _, vec := range dc.DCNet {
+			if uint32(len(vec)) != sesRun.mtot {
+				blamed = append(blamed, dc.Identity)
+				continue DCs
+			}
 			dcVecs = append(dcVecs, mixing.Vec(vec))
 		}
 	}
 	if len(blamed) > 0 {
-		sesRun.logf("blaming %x during run (wrong DC-net count)", []identity(blamed))
+		sesRun.logf("blaming %x during run (wrong DC-net dimensions)", []identity(blamed))
 		return sesRun, blamed
 	}
 	mixedMsgs := mixing.XorVectors(dcVecs)

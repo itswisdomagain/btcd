@@ -1,4 +1,4 @@
-// Copyright (c) 2023-2024 The Decred developers
+// Copyright (c) 2023-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -17,7 +17,7 @@ import (
 // deriveSessionID creates the mix session identifier from an initial sorted
 // slice of PR message hashes.
 func deriveSessionID(seenPRs []chainhash.Hash, epoch uint64) [32]byte {
-	h := blake256.New()
+	h := blake256.NewHasher256()
 	buf := make([]byte, 8)
 
 	h.Write([]byte("bitcoin-mix-session"))
@@ -29,7 +29,7 @@ func deriveSessionID(seenPRs []chainhash.Hash, epoch uint64) [32]byte {
 		h.Write(seenPRs[i][:])
 	}
 
-	return *(*[32]byte)(h.Sum(nil))
+	return h.Sum256()
 }
 
 // SortPRsForSession performs an in-place sort of prs, moving each pair

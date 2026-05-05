@@ -5,11 +5,10 @@
 package mixing
 
 import (
-	"bytes"
-	"fmt"
+	"encoding/hex"
 	"hash"
+	"strconv"
 
-	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
@@ -42,11 +41,9 @@ func SignMessage(m Signed, priv *secp256k1.PrivateKey) error {
 // VerifySignedMessage verifies that a signed message carries a valid
 // signature for the represented identity.
 func VerifySignedMessage(m Signed) bool {
-	h := blake256.New()
+	h := blake256.NewHasher256()
 	m.WriteSignedData(h)
-	sigHash := h.Sum(nil)
-
-	h.Reset()
+	sigHash := h.Sum256()
 
 	command := m.Command()
 	sid := m.Sid()
@@ -56,7 +53,8 @@ func VerifySignedMessage(m Signed) bool {
 		run = 0
 	}
 
-	return verify(h, m.Pub(), m.Sig(), sigHash, command, sid, run)
+	h.Reset()
+	return verify(h, m.Pub(), m.Sig(), sigHash[:], command, sid, run)
 }
 
 // VerifySignature verifies a message signature from its signature hash and
@@ -65,18 +63,16 @@ func VerifySignedMessage(m Signed) bool {
 // the same public key, and demonstrating this can be used to prove malicious
 // behavior by sending different versions of messages through the network.
 func VerifySignature(pub, sig, sigHash []byte, command string, sid []byte, run uint32) bool {
-	h := blake256.New()
+	h := blake256.NewHasher256()
 	return verify(h, pub, sig, sigHash, command, sid, run)
 }
 
 var zeroSID [32]byte
 
 func sign(priv *secp256k1.PrivateKey, m Signed) ([]byte, error) {
-	h := blake256.New()
+	h := blake256.NewHasher256()
 	m.WriteSignedData(h)
-	sigHash := h.Sum(nil)
-
-	h.Reset()
+	sigHash := h.Sum256()
 
 	sid := m.Sid()
 	run := m.GetRun()
@@ -85,24 +81,16 @@ func sign(priv *secp256k1.PrivateKey, m Signed) ([]byte, error) {
 		run = 0
 	}
 
-	buf := new(bytes.Buffer)
-	buf.Grow(len(tag) + wire.CommandSize +
-		64 + // sid
-		4 + // run
-		64 + // sigHash
-		4, // commas
-	)
-	fmt.Fprintf(buf, tag+",%s,%x,%d,%x", m.Command(), sid, run, sigHash)
-	h.Write(buf.Bytes())
-
-	sig, err := schnorr.Sign(priv, h.Sum(nil))
+	h.Reset()
+	hash := schnorrHash(h, m.Command(), sid, run, sigHash[:])
+	sig, err := schnorr.Sign(priv, hash[:])
 	if err != nil {
 		return nil, err
 	}
 	return sig.Serialize(), nil
 }
 
-func verify(h hash.Hash, pk []byte, sig []byte, sigHash []byte, command string, sid []byte, run uint32) bool {
+func verify(h *blake256.Hasher256, pk []byte, sig []byte, sigHash []byte, command string, sid []byte, run uint32) bool {
 	if len(pk) != secp256k1.PubKeyBytesLenCompressed {
 		return false
 	}
@@ -115,16 +103,21 @@ func verify(h hash.Hash, pk []byte, sig []byte, sigHash []byte, command string, 
 		return false
 	}
 
-	h.Reset()
+	hash := schnorrHash(h, command, sid, run, sigHash)
+	return sigParsed.Verify(hash[:], pkParsed)
+}
 
-	buf := new(bytes.Buffer)
-	buf.Grow(len(tag) + wire.CommandSize +
-		64 + // sid
-		4 + // run
-		64 + // sigHash
-		4, // commas
-	)
-	fmt.Fprintf(buf, tag+",%s,%x,%d,%x", command, sid, run, sigHash)
-	h.Write(buf.Bytes())
-	return sigParsed.Verify(h.Sum(nil), pkParsed)
+func schnorrHash(h *blake256.Hasher256, command string, sid []byte, run uint32, sigHash []byte) [32]byte {
+	buf := make([]byte, 64)
+
+	h.WriteBytes([]byte(tag))
+	h.WriteByte(',')
+	h.WriteString(command)
+	h.WriteByte(',')
+	h.WriteBytes(hex.AppendEncode(buf[:0], sid))
+	h.WriteByte(',')
+	h.WriteBytes(strconv.AppendUint(buf[:0], uint64(run), 10))
+	h.WriteByte(',')
+	h.WriteBytes(hex.AppendEncode(buf[:0], sigHash))
+	return h.Sum256()
 }

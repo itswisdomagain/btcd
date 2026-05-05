@@ -1,4 +1,4 @@
-// Copyright (c) 2023-2025 The Decred developers
+// Copyright (c) 2023-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -27,7 +28,19 @@ import (
 
 const minconf = 1
 const feeRate = 1e3
+const maxRelayFeeMultiplier = 1e4
 const earlyKEDuration = 5 * time.Second
+
+const (
+	// maxOrphans specifies the maximum number of orphans allowed in the orphan
+	// pool at one time.
+	maxOrphans = 250
+
+	// maxPostEvictionOrphans is the maximum number of orphans to keep in the
+	// pool after a forced eviction occurs due to exceeding the overall max
+	// limit.  It is set to 75% of the overall max limit.
+	maxPostEvictionOrphans = maxOrphans * 3 / 4
+)
 
 type idPubKey = [33]byte
 
@@ -84,6 +97,27 @@ func (m msgtype) String() string {
 	}
 }
 
+// Source represents a source of mixing messages.  This is typically the peer
+// that first relayed them, but the caller may choose any scheme it desires.
+type Source interface {
+	// ID returns an opaque identifier that uniquely identifies the source.
+	ID() uint64
+}
+
+// Uint64Source implements the [Source] interface by returning the associated
+// uint64 as the ID.  This is primarily useful as a convenience for callers that
+// do not require an additional object associated with the source.
+type Uint64Source uint64
+
+// ID returns the underlying uint64 associated with the source.
+func (s Uint64Source) ID() uint64 { return uint64(s) }
+
+// Ensure [Uint64Source] implements the [Source] interface.
+var _ Source = (*Uint64Source)(nil)
+
+// ZeroSource implements the [Source] interface by returning 0 for the ID.
+const ZeroSource = Uint64Source(0)
+
 // entry describes non-PR messages accepted to the pool.
 type entry struct {
 	hash     chainhash.Hash
@@ -93,8 +127,9 @@ type entry struct {
 	msgtype  msgtype
 }
 
-type orphan struct {
+type orphanMsg struct {
 	message  mixing.Message
+	src      Source
 	accepted time.Time
 }
 
@@ -144,8 +179,8 @@ type Pool struct {
 	prs                map[chainhash.Hash]*wire.MsgMixPairReq
 	outPoints          map[wire.OutPoint]chainhash.Hash
 	pool               map[chainhash.Hash]entry
-	orphans            map[chainhash.Hash]*orphan
-	orphansByID        map[idPubKey]map[chainhash.Hash]mixing.Message
+	orphans            map[chainhash.Hash]*orphanMsg
+	orphansByID        map[idPubKey]map[chainhash.Hash]*orphanMsg
 	messagesByIdentity map[idPubKey][]chainhash.Hash
 	latestKE           map[idPubKey]*wire.MsgMixKeyExchange
 	sessions           map[[32]byte]*session
@@ -227,8 +262,8 @@ func NewPool(blockchain BlockChain) *Pool {
 		prs:                make(map[chainhash.Hash]*wire.MsgMixPairReq),
 		outPoints:          make(map[wire.OutPoint]chainhash.Hash),
 		pool:               make(map[chainhash.Hash]entry),
-		orphans:            make(map[chainhash.Hash]*orphan),
-		orphansByID:        make(map[idPubKey]map[chainhash.Hash]mixing.Message),
+		orphans:            make(map[chainhash.Hash]*orphanMsg),
+		orphansByID:        make(map[idPubKey]map[chainhash.Hash]*orphanMsg),
 		messagesByIdentity: make(map[idPubKey][]chainhash.Hash),
 		latestKE:           make(map[idPubKey]*wire.MsgMixKeyExchange),
 		sessions:           make(map[[32]byte]*session),
@@ -473,6 +508,46 @@ func (p *Pool) removeMessage(hash chainhash.Hash) {
 	p.maybeLogRecentMixMsgsNumEvicted()
 }
 
+// removeOrphan removes the message associated with the passed hash from the
+// orphan pool and orphans by ID index.
+//
+// This function MUST be called with the mixpool lock held (for writes).
+func (p *Pool) removeOrphan(hash *chainhash.Hash, id *idPubKey) {
+	// Remove the message from the orphan pool and the reference from the
+	// orphans by ID index.
+	delete(p.orphans, *hash)
+	orphansByID := p.orphansByID[*id]
+	delete(orphansByID, *hash)
+
+	// Remove the map entry altogether if there are no longer any orphans which
+	// depend on it.
+	if len(orphansByID) == 0 {
+		delete(p.orphansByID, *id)
+	}
+
+	log.Tracef("Removed orphan %v (pool size %v)", hash, len(p.orphans))
+}
+
+// removeOrphansBySourceID removes up to the maximum specified number of orphan
+// messages associated with the provided source ID and returns the number of
+// entries removed.
+
+// This function MUST be called with the mixpool lock held (for writes).
+func (p *Pool) removeOrphansBySourceID(srcID uint64, maxToEvict uint64) uint64 {
+	var numEvicted uint64
+	for hash, orphan := range p.orphans {
+		if numEvicted >= maxToEvict {
+			break
+		}
+		if orphan.src.ID() == srcID {
+			id := (*idPubKey)(orphan.message.Pub())
+			p.removeOrphan(&hash, id)
+			numEvicted++
+		}
+	}
+	return numEvicted
+}
+
 // ExpireMessages immediately expires all pair requests and sessions built
 // from them that indicate expiry at or after a block height.
 func (p *Pool) ExpireMessages(height uint32) {
@@ -516,8 +591,7 @@ func (p *Pool) expireMessagesNow(height uint32) {
 			}
 		}
 		if expire {
-			delete(p.orphans, hash)
-			delete(p.orphansByID, *(*idPubKey)(o.message.Pub()))
+			p.removeOrphan(&hash, (*idPubKey)(o.message.Pub()))
 		}
 	}
 }
@@ -968,6 +1042,88 @@ Loop:
 
 var zeroHash chainhash.Hash
 
+// limitNumOrphans limits the number of orphan mixing messages by evicting a
+// subset of the existing orphans when adding a new one would cause it to
+// overflow the max allowed.
+//
+// This function MUST be called with the mixpool lock held (for writes).
+func (p *Pool) limitNumOrphans() {
+	// Nothing to do if adding another orphan will not cause the pool to exceed
+	// the limit.
+	if len(p.orphans)+1 <= maxOrphans {
+		return
+	}
+
+	// Determine which sources have the most orphans associated with them and
+	// then remove all of the orphans associated with each source in descending
+	// order until the orphan pool has reached the target maximum number of post
+	// eviction orphans allowed.
+	//
+	// This approach is fairly efficient since it naturally limits the frequency
+	// of eviction algorithm execution.  Further, in practice, orphan messages
+	// are quite rare after initial startup where ongoing mixing sessions are
+	// discovered, so any peer sending a lot of orphans is likely experiencing
+	// severe connectivity issues or otherwise misbehaving.  This approach also
+	// has the added benefit of handling a variety of orphan flooding
+	// misbehavior well.
+	srcCounters := make(map[uint64]int)
+	for _, orphan := range p.orphans {
+		srcCounters[orphan.src.ID()]++
+	}
+	type srcWithCount struct {
+		srcID uint64
+		count int
+	}
+	srcCounts := make([]srcWithCount, 0, len(srcCounters))
+	for srcID, count := range srcCounters {
+		srcCounts = append(srcCounts, srcWithCount{srcID, count})
+	}
+	slices.SortFunc(srcCounts, func(a, b srcWithCount) int {
+		return b.count - a.count
+	})
+	numOrphans := uint64(len(p.orphans))
+	for numOrphans > maxPostEvictionOrphans && len(srcCounts) > 0 {
+		srcID := srcCounts[0].srcID
+		maxToEvict := numOrphans - maxPostEvictionOrphans
+		numEvicted := p.removeOrphansBySourceID(srcID, maxToEvict)
+		log.Tracef("Removed %d orphans with source ID %d", numEvicted, srcID)
+		numOrphans -= numEvicted
+		srcCounts = srcCounts[1:]
+	}
+}
+
+// addOrphan adds the passed message to the orphan pool when it is not already
+// present.
+//
+// It also potentially removes orphans to make room when necessary.
+//
+// This function MUST be called with the mixpool lock held (for writes).
+func (p *Pool) addOrphan(msg mixing.Message, hash *chainhash.Hash, id *idPubKey, src Source) {
+	orphansByID := p.orphansByID[*id]
+	if _, ok := orphansByID[*hash]; ok {
+		// Already an orphan.
+		return
+	}
+
+	// Limit the number of orphan mixing messages to prevent memory exhaustion.
+	p.limitNumOrphans()
+
+	orphan := &orphanMsg{
+		message:  msg,
+		src:      src,
+		accepted: time.Now(),
+	}
+	p.orphans[*hash] = orphan
+	if orphansByID == nil {
+		orphansByID = make(map[chainhash.Hash]*orphanMsg)
+		p.orphansByID[*id] = orphansByID
+	}
+	orphansByID[*hash] = orphan
+
+	log.Debugf("Stored orphan message %T %v (pool size: %d)", msg, hash,
+		len(p.orphans))
+}
+
 // AcceptMessage accepts a mixing message to the pool.
 //
 // Messages must contain the mixing participant's identity and contain a valid
@@ -979,7 +1135,7 @@ var zeroHash chainhash.Hash
 //
 // All newly accepted messages, including any orphan key exchange messages
 // that were processed after processing missing pair requests, are returned.
-func (p *Pool) AcceptMessage(msg mixing.Message) (accepted []mixing.Message, err error) {
+func (p *Pool) AcceptMessage(msg mixing.Message, src Source) (accepted []mixing.Message, err error) {
 	defer func() {
 		if err == nil && len(accepted) == 0 {
 			// Don't log duplicate messages or non-KE orphans.
@@ -1074,7 +1230,7 @@ func (p *Pool) AcceptMessage(msg mixing.Message) (accepted []mixing.Message, err
 		p.mtx.Lock()
 		defer p.mtx.Unlock()
 
-		accepted, err := p.acceptKE(msg, &hash, id)
+		accepted, err := p.acceptKE(msg, &hash, id, src)
 		if err != nil {
 			return nil, err
 		}
@@ -1087,16 +1243,34 @@ func (p *Pool) AcceptMessage(msg mixing.Message) (accepted []mixing.Message, err
 		return allAccepted, nil
 
 	case *wire.MsgMixCiphertexts:
+		if err := checkCTLimits(msg); err != nil {
+			return nil, err
+		}
 		msgtype = msgtypeCT
 	case *wire.MsgMixSlotReserve:
+		if err := checkSRLimits(msg); err != nil {
+			return nil, err
+		}
 		msgtype = msgtypeSR
 	case *wire.MsgMixDCNet:
+		if err := checkDCLimits(msg); err != nil {
+			return nil, err
+		}
 		msgtype = msgtypeDC
 	case *wire.MsgMixConfirm:
+		if err := checkCMLimits(msg); err != nil {
+			return nil, err
+		}
 		msgtype = msgtypeCM
 	case *wire.MsgMixFactoredPoly:
+		if err := checkFPLimits(msg); err != nil {
+			return nil, err
+		}
 		msgtype = msgtypeFP
 	case *wire.MsgMixSecrets:
+		if err := checkRSLimits(msg); err != nil {
+			return nil, err
+		}
 		msgtype = msgtypeRS
 	default:
 		return nil, fmt.Errorf("unknown mix message type %T", msg)
@@ -1132,20 +1306,7 @@ func (p *Pool) AcceptMessage(msg mixing.Message) (accepted []mixing.Message, err
 	}
 	// Save as an orphan if their KE is not (yet) accepted.
 	if !haveKE {
-		orphansByID := p.orphansByID[*id]
-		if _, ok := orphansByID[hash]; ok {
-			// Already an orphan.
-			return nil, nil
-		}
-		if orphansByID == nil {
-			orphansByID = make(map[chainhash.Hash]mixing.Message)
-			p.orphansByID[*id] = orphansByID
-		}
-		p.orphans[hash] = &orphan{
-			message:  msg,
-			accepted: time.Now(),
-		}
-		orphansByID[hash] = msg
+		p.addOrphan(msg, &hash, id, src)
 
 		// TODO: Consider return an error containing the unknown
 		// messages, so they can be getdata'd.
@@ -1196,30 +1357,46 @@ func (p *Pool) removePR(pr *wire.MsgMixPairReq, reason string) {
 	delete(p.messagesByIdentity, pr.Identity)
 	delete(p.latestKE, pr.Identity)
 	for orphanHash := range p.orphansByID[pr.Identity] {
-		delete(p.orphans, orphanHash)
+		p.removeOrphan(&orphanHash, &pr.Identity)
 	}
-	delete(p.orphansByID, pr.Identity)
 	for i := range pr.UTXOs {
 		delete(p.outPoints, pr.UTXOs[i].OutPoint)
 	}
 }
 
 func (p *Pool) checkAcceptPR(pr *wire.MsgMixPairReq) error {
+	if err := checkPRLimits(pr); err != nil {
+		return err
+	}
+
+	inputValue := pr.InputValue
+	if pr.Change != nil {
+		if pr.Change.Value < 0 || isDustAmount(pr.Change.Value, p2pkhv0PkScriptSize, feeRate) {
+			return ruleError(ErrChangeDust)
+		}
+
+		if pr.Change.Value > inputValue {
+			return ruleError(ErrLowInput)
+		}
+		inputValue -= pr.Change.Value
+
+		// if pr.Change.Version != 0 {
+		// 	return ruleError(fmt.Errorf("unrecognized script version"))
+		// }
+		if /*pr.Change.Version == 0 && */ !txscript.IsPayToPubKeyHash(pr.Change.PkScript) &&
+			!txscript.IsPayToScriptHash(pr.Change.PkScript) {
+			return ruleError(ErrInvalidScript)
+		}
+	}
 	switch {
 	case len(pr.UTXOs) == 0: // Require at least one utxo.
 		return ruleError(ErrMissingUTXOs)
 	case pr.MessageCount == 0: // Require at least one mixed message.
 		return ruleError(ErrInvalidMessageCount)
-	case pr.InputValue < int64(pr.MessageCount)*pr.MixAmount:
+	case isDustAmount(pr.MixAmount, p2pkhv0PkScriptSize, feeRate):
+		return ruleError(ErrMixDust)
+	case inputValue < int64(pr.MessageCount)*pr.MixAmount:
 		return ruleError(ErrInvalidTotalMixAmount)
-	case pr.Change != nil:
-		if isDustAmount(pr.Change.Value, p2pkhv0PkScriptSize, feeRate) {
-			return ruleError(ErrChangeDust)
-		}
-		if !txscript.IsPayToPubKeyHash(pr.Change.PkScript) &&
-			!txscript.IsPayToScriptHash(pr.Change.PkScript) {
-			return ruleError(ErrInvalidScript)
-		}
 	}
 
 	// Check that expiry has not been reached, nor that it is too far
@@ -1246,12 +1423,67 @@ func (p *Pool) checkAcceptPR(pr *wire.MsgMixPairReq) error {
 		return err
 	}
 
-	// If able, sanity check UTXOs.
-	if p.utxoFetcher != nil {
-		err := p.checkUTXOs(pr, curHeight)
-		if err != nil {
-			return err
+	// Check that UTXOs exist, have confirmations, sum of UTXO values matches the
+	// input value, and proof of ownership is valid.
+	var totalValue int64
+	outpoints := make(map[wire.OutPoint]struct{})
+	for i := range pr.UTXOs {
+		utxo := &pr.UTXOs[i]
+
+		if _, ok := outpoints[utxo.OutPoint]; ok {
+			return ruleError(ErrInvalidUTXOProof)
 		}
+		outpoints[utxo.OutPoint] = struct{}{}
+
+		if len(utxo.Script) != 0 {
+			return ruleError(fmt.Errorf("P2SH inputs are unsupported"))
+		}
+
+		if p.utxoFetcher != nil {
+			entry, err := p.utxoFetcher.FetchUtxoEntry(utxo.OutPoint)
+			if err != nil {
+				return err
+			}
+			if entry == nil || entry.IsSpent() {
+				return ruleError(fmt.Errorf("output %v is not unspent",
+					&utxo.OutPoint))
+			}
+			height := entry.BlockHeight()
+			if !confirmed(minconf, height, curHeight) {
+				return ruleError(fmt.Errorf("output %v is unconfirmed",
+					&utxo.OutPoint))
+			}
+			if entry.ScriptVersion() != 0 {
+				return ruleError(fmt.Errorf("output %v does not use script version 0",
+					&utxo.OutPoint))
+			}
+
+			// Check proof of key ownership and ability to sign coinjoin
+			// inputs.
+			var extractPubKeyHash160 func([]byte) []byte
+			switch utxo.Opcode {
+			case 0:
+				extractPubKeyHash160 = txscript.ExtractPubKeyHash
+			// case txscript.OP_SSGEN:
+			// 	extractPubKeyHash160 = stdscript.ExtractStakeGenPubKeyHashV0
+			// case txscript.OP_SSRTX:
+			// 	extractPubKeyHash160 = stdscript.ExtractStakeRevocationPubKeyHashV0
+			// case txscript.OP_TGEN:
+			// 	extractPubKeyHash160 = stdscript.ExtractTreasuryGenPubKeyHashV0
+			default:
+				return ruleError(fmt.Errorf("unsupported output script for UTXO %s", &utxo.OutPoint))
+			}
+			valid := validateOwnerProofP2PKHv0(extractPubKeyHash160,
+				entry.PkScript(), utxo.PubKey, utxo.Signature, pr.Expires())
+			if !valid {
+				return ruleError(ErrInvalidUTXOProof)
+			}
+
+			totalValue += entry.Amount()
+		}
+	}
+	if totalValue != 0 && totalValue != pr.InputValue {
+		return ruleError(ErrInvalidUTXOProof)
 	}
 
 	return nil
@@ -1316,42 +1548,35 @@ func (p *Pool) reconsiderOrphans(accepted mixing.Message, id *idPubKey) []mixing
 	// If the accepted message was a PR, there may be KE orphans that can
 	// be accepted now.
 	if pr, ok := accepted.(*wire.MsgMixPairReq); ok {
-		var orphanKEs []*wire.MsgMixKeyExchange
+		var orphanKEs []*orphanMsg
 		for _, orphan := range p.orphansByID[*id] {
-			orphanKE, ok := orphan.(*wire.MsgMixKeyExchange)
+			orphanKE, ok := orphan.message.(*wire.MsgMixKeyExchange)
 			if !ok {
 				continue
 			}
-			refsAcceptedPR := false
-			for _, prHash := range orphanKE.SeenPRs {
-				if pr.Hash() == prHash {
-					refsAcceptedPR = true
-					break
-				}
-			}
-			if !refsAcceptedPR {
+			if !slices.Contains(orphanKE.SeenPRs, pr.Hash()) {
 				continue
 			}
 
-			orphanKEs = append(orphanKEs, orphanKE)
+			orphanKEs = append(orphanKEs, orphan)
 		}
 
-		for _, orphanKE := range orphanKEs {
+		for _, orphan := range orphanKEs {
+			orphanKE := orphan.message.(*wire.MsgMixKeyExchange)
 			orphanKEHash := orphanKE.Hash()
-			_, err := p.acceptKE(orphanKE, &orphanKEHash, &orphanKE.Identity)
+			_, err := p.acceptKE(orphanKE, &orphanKEHash, &orphanKE.Identity,
+				orphan.src)
 			if err != nil {
 				log.Debugf("orphan KE could not be accepted: %v", err)
 				continue
 			}
 
 			kes = append(kes, orphanKE)
-			delete(p.orphansByID[*id], orphanKEHash)
-			delete(p.orphans, orphanKEHash)
+			p.removeOrphan(&orphanKEHash, id)
 
 			acceptedMessages = append(acceptedMessages, orphanKE)
 		}
 		if len(p.orphansByID[*id]) == 0 {
-			delete(p.orphansByID, *id)
 			return acceptedMessages
 		}
 	}
@@ -1367,8 +1592,8 @@ func (p *Pool) reconsiderOrphans(accepted mixing.Message, id *idPubKey) []mixing
 			continue
 		}
 
-		var acceptedOrphans []mixing.Message
-		for orphanHash, orphan := range p.orphansByID[*id] {
+		for orphanHash, omsg := range p.orphansByID[*id] {
+			orphan := omsg.message
 			if !bytes.Equal(orphan.Sid(), ke.SessionID[:]) {
 				continue
 			}
@@ -1394,78 +1619,15 @@ func (p *Pool) reconsiderOrphans(accepted mixing.Message, id *idPubKey) []mixing
 
 			p.acceptEntry(orphan, msgtype, &orphanHash, id, ses)
 
-			acceptedOrphans = append(acceptedOrphans, orphan)
 			acceptedMessages = append(acceptedMessages, orphan)
-		}
-		for _, orphan := range acceptedOrphans {
-			orphanHash := orphan.Hash()
-			delete(p.orphansByID[*id], orphanHash)
-			delete(p.orphans, orphanHash)
+			p.removeOrphan(&orphanHash, id)
 		}
 		if len(p.orphansByID[*id]) == 0 {
-			delete(p.orphansByID, *id)
 			return acceptedMessages
 		}
 	}
 
 	return acceptedMessages
-}
-
-// Check that UTXOs exist, have confirmations, sum of UTXO values matches the
-// input value, and proof of ownership is valid.
-func (p *Pool) checkUTXOs(pr *wire.MsgMixPairReq, curHeight int64) error {
-	var totalValue int64
-
-	for i := range pr.UTXOs {
-		utxo := &pr.UTXOs[i]
-		entry, err := p.utxoFetcher.FetchUtxoEntry(utxo.OutPoint)
-		if err != nil {
-			return err
-		}
-		if entry == nil || entry.IsSpent() {
-			return ruleError(fmt.Errorf("output %v is not unspent",
-				&utxo.OutPoint))
-		}
-		height := entry.BlockHeight()
-		if !confirmed(minconf, height, curHeight) {
-			return ruleError(fmt.Errorf("output %v is unconfirmed",
-				&utxo.OutPoint))
-		}
-		if entry.ScriptVersion() != 0 {
-			return ruleError(fmt.Errorf("output %v does not use script version 0",
-				&utxo.OutPoint))
-		}
-
-		// Check proof of key ownership and ability to sign coinjoin
-		// inputs.
-		var extractPubKeyHash160 func([]byte) []byte
-		switch utxo.Opcode {
-		case 0:
-			extractPubKeyHash160 = txscript.ExtractPubKeyHash
-		// case txscript.OP_SSGEN:
-		// 	extractPubKeyHash160 = stdscript.ExtractStakeGenPubKeyHashV0
-		// case txscript.OP_SSRTX:
-		// 	extractPubKeyHash160 = stdscript.ExtractStakeRevocationPubKeyHashV0
-		// case txscript.OP_TGEN:
-		// 	extractPubKeyHash160 = stdscript.ExtractTreasuryGenPubKeyHashV0
-		default:
-			return ruleError(fmt.Errorf("unsupported output script for UTXO %s", &utxo.OutPoint))
-		}
-		valid := validateOwnerProofP2PKHv0(extractPubKeyHash160,
-			entry.PkScript(), utxo.PubKey, utxo.Signature, pr.Expires())
-		if !valid {
-			return ruleError(ErrInvalidUTXOProof)
-		}
-
-		totalValue += entry.Amount()
-	}
-
-	if totalValue != pr.InputValue {
-		return ruleError(fmt.Errorf("input value does not match sum of UTXO " +
-			"values"))
-	}
-
-	return nil
 }
 
 func validateOwnerProofP2PKHv0(extractFunc func([]byte) []byte, pkscript, pubkey, sig []byte, expires uint32) bool {
@@ -1479,6 +1641,10 @@ func validateOwnerProofP2PKHv0(extractFunc func([]byte) []byte, pkscript, pubkey
 }
 
 func (p *Pool) checkAcceptKE(ke *wire.MsgMixKeyExchange) error {
+	if err := checkKELimits(ke); err != nil {
+		return err
+	}
+
 	// Validate PR order and session ID.
 	if err := mixing.ValidateSession(ke); err != nil {
 		return ruleError(err)
@@ -1498,7 +1664,7 @@ func (p *Pool) checkAcceptKE(ke *wire.MsgMixKeyExchange) error {
 	return nil
 }
 
-func (p *Pool) acceptKE(ke *wire.MsgMixKeyExchange, hash *chainhash.Hash, id *idPubKey) (accepted *wire.MsgMixKeyExchange, err error) {
+func (p *Pool) acceptKE(ke *wire.MsgMixKeyExchange, hash *chainhash.Hash, id *idPubKey, src Source) (accepted *wire.MsgMixKeyExchange, err error) {
 	// Check if already accepted.
 	if _, ok := p.pool[*hash]; ok {
 		return nil, nil
@@ -1550,16 +1716,7 @@ func (p *Pool) acceptKE(ke *wire.MsgMixKeyExchange, hash *chainhash.Hash, id *id
 		}
 	}
 	if missingOwnPR != nil {
-		p.orphans[*hash] = &orphan{
-			message:  ke,
-			accepted: time.Now(),
-		}
-		orphansByID := p.orphansByID[*id]
-		if orphansByID == nil {
-			orphansByID = make(map[chainhash.Hash]mixing.Message)
-			p.orphansByID[*id] = orphansByID
-		}
-		orphansByID[*hash] = ke
+		p.addOrphan(ke, hash, id, src)
 		err := &MissingOwnPRError{
 			MissingPR: *missingOwnPR,
 		}
@@ -1656,6 +1813,10 @@ func checkFee(pr *wire.MsgMixPairReq, feeRate int64) error {
 	requiredFee := feeForSerializeSize(feeRate, estimatedSize)
 	if fee < requiredFee {
 		return ruleError(ErrLowInput)
+	}
+	maxFee := feeForSerializeSize(feeRate, estimatedSize*maxRelayFeeMultiplier)
+	if fee > maxFee {
+		return ruleError(ErrHighFee)
 	}
 
 	return nil

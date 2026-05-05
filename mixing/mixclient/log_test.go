@@ -1,4 +1,4 @@
-// Copyright (c) 2024 The Decred developers
+// Copyright (c) 2024-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -32,6 +32,7 @@ func useTestLogger(t *testing.T) (btclog.Logger, func()) {
 	l.SetLevel(btclog.LevelTrace)
 	mixpool.UseLogger(l)
 	return l, func() {
+		l.SetLevel(btclog.LevelOff)
 		mixpool.UseLogger(btclog.Disabled)
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2023-2024 The Decred developers
+// Copyright (c) 2023-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -13,6 +13,9 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,9 +37,18 @@ var params = chaincfg.SimNetParams
 
 var seed [32]byte
 
+var prngNonce atomic.Uint32
+
 func testPRNG(t *testing.T) *chacha20prng.Reader {
-	t.Logf("PRNG seed: %x\n", seed)
-	return chacha20prng.New(seed[:], 0)
+	t.Helper()
+	n := prngNonce.Add(1) - 1
+	t.Cleanup(func() {
+		t.Helper()
+		if t.Failed() {
+			t.Logf("Reproduce with -seed=%x/%d", seed[:], n)
+		}
+	})
+	return chacha20prng.New(seed[:], n)
 }
 
 var utxoStore struct {
@@ -48,16 +60,23 @@ func TestMain(m *testing.M) {
 	seedFlag := flag.String("seed", "", "use deterministic PRNG seed (32 bytes, hex)")
 	flag.Parse()
 	if *seedFlag != "" {
-		b, err := hex.DecodeString(*seedFlag)
+		slash := strings.IndexByte(*seedFlag, '/')
+		if slash != 64 {
+			fmt.Fprintln(os.Stderr, "invalid -seed: must be in form <32 byte hex seed>/iteration")
+			os.Exit(1)
+		}
+		b, err := hex.DecodeString((*seedFlag)[:slash])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "invalid -seed:", err)
 			os.Exit(1)
 		}
-		if len(b) != 32 {
-			fmt.Fprintln(os.Stderr, "invalid -seed: must be 32 bytes")
+		copy(seed[:], b)
+		nonce, err := strconv.ParseUint((*seedFlag)[slash+1:], 10, 32)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "invalid -seed nonce:", err)
 			os.Exit(1)
 		}
-		copy(seed[:], b)
+		prngNonce.Store(uint32(nonce))
 	} else {
 		cryptorand.Read(seed[:])
 	}
@@ -200,7 +219,7 @@ func TestAccept(t *testing.T) {
 
 	var (
 		expires      uint32 = uint32(c.height) + 2
-		mixAmount    int64  = 10e8
+		mixAmount    int64  = 20e8 - 3000
 		scriptClass         = mixing.ScriptClassP2PKHv0
 		txVersion    int32  = wire.TxVersion
 		lockTime     uint32 = 0
@@ -225,7 +244,7 @@ func TestAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.AcceptMessage(pr)
+	_, err = p.AcceptMessage(pr, ZeroSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +290,7 @@ func TestAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.AcceptMessage(ke)
+	_, err = p.AcceptMessage(ke, ZeroSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +308,7 @@ func TestAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.AcceptMessage(ct)
+	_, err = p.AcceptMessage(ct, ZeroSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +349,7 @@ func TestAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.AcceptMessage(sr)
+	_, err = p.AcceptMessage(sr, ZeroSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +384,7 @@ func TestAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.AcceptMessage(dc)
+	_, err = p.AcceptMessage(dc, ZeroSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +418,7 @@ func TestAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.AcceptMessage(cm)
+	_, err = p.AcceptMessage(cm, ZeroSource)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,5 +1,5 @@
 // Copyright (c) 2013-2017 The btcsuite developers
-// Copyright (c) 2015-2017 The Decred developers
+// Copyright (c) 2015-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -39,6 +39,7 @@ import (
 	"github.com/btcsuite/btcd/mining"
 	"github.com/btcsuite/btcd/mining/cpuminer"
 	"github.com/btcsuite/btcd/mixing"
+	"github.com/btcsuite/btcd/mixing/mixpool"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -3534,7 +3535,8 @@ func handleSendRawMixMessage(s *rpcServer, cmd interface{}, closeChan <-chan str
 	msg.WriteHash(s.blake256Hasher)
 	s.blake256HaserMu.Unlock()
 
-	err = s.cfg.SyncMgr.SubmitMixMessage(msg)
+	// Use 0 for the source to represent the local node.
+	err = s.cfg.SyncMgr.AcceptMixMessage(msg, mixpool.ZeroSource)
 	if err != nil {
 		// XXX: consider a better error code/function
 		return nil, fmt.Errorf("Rejected mix message: %s", err)
@@ -4925,9 +4927,9 @@ type rpcserverSyncManager interface {
 	// hashes.
 	LocateHeaders(locators []*chainhash.Hash, hashStop *chainhash.Hash) []wire.BlockHeader
 
-	// SubmitMixMessage submits the mixing message to the network after
-	// processing it locally.
-	SubmitMixMessage(msg mixing.Message) error
+	// AcceptMixMessage attempts to accept a mixing message to the local mixing
+	// pool.
+	AcceptMixMessage(msg mixing.Message, src mixpool.Source) error
 }
 
 // MixPooler represents a source of mixpool message data for the RPC server.

@@ -1,4 +1,5 @@
 // Copyright (c) 2017 The btcsuite developers
+// Copyright (c) 2015-2026 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -12,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/mempool"
 	"github.com/btcsuite/btcd/mixing"
+	"github.com/btcsuite/btcd/mixing/mixpool"
 	"github.com/btcsuite/btcd/netsync"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/wire"
@@ -294,8 +296,9 @@ func (b *rpcSyncMgr) LocateHeaders(locators []*chainhash.Hash, hashStop *chainha
 	return b.server.chain.LocateHeaders(locators, hashStop)
 }
 
-// SubmitMixMessage locally processes the mixing message.
-func (b *rpcSyncMgr) SubmitMixMessage(msg mixing.Message) error {
-	_, err := b.server.mixMsgPool.AcceptMessage(msg)
+// AcceptMixMessage attempts to accept a mixing message to the local mixing
+// pool.
+func (b *rpcSyncMgr) AcceptMixMessage(msg mixing.Message, src mixpool.Source) error {
+	_, err := b.server.mixMsgPool.AcceptMessage(msg, src)
 	return err
 }
