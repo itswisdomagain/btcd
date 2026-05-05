@@ -68,8 +68,8 @@ github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 h1:NMZiJj8QnKe1LgsbDayM4UoHwbvw
 github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0/go.mod h1:ZXNYxsqcloTdSy/rNShjYzMhyjf0LaoftYK0p+A3h40=
 github.com/decred/dcrd/lru v1.0.0 h1:Kbsb1SFDsIlaupWPwsPp+dkxiBY1frcS07PCPgotKz8=
 github.com/decred/dcrd/lru v1.0.0/go.mod h1:mxKOwFd7lFjN2GZYsiz/ecgqR6kkYAl+0pz0tEMk218=
-github.com/decred/dcrd/mixing v0.7.2 h1:lfCjkn9N7KuANNJkBdTJTrkIbzzklsf8yGBQ8trVTpk=
-github.com/decred/dcrd/mixing v0.7.2/go.mod h1:riSgG1GpWXl8LVuBvo8WXuFgcBj01ZGpTAxT/4PrtU0=
+github.com/decred/dcrd/mixing v0.7.3 h1:zrMPKvR3GP2stDiqT9tiv0e8GGnFpgl1EClNRew7FFk=
+github.com/decred/dcrd/mixing v0.7.3/go.mod h1:riSgG1GpWXl8LVuBvo8WXuFgcBj01ZGpTAxT/4PrtU0=
 github.com/decred/dcrd/txscript/v4 v4.1.2 h1:1EP7ZmBDl2LBeAMTEygxY8rVNN3+lkGqrsb4u64x+II=
 github.com/decred/dcrd/txscript/v4 v4.1.2/go.mod h1:r5/8qfCnl6TFrE369gggUayVIryM1oC7BLoRfa27Ckw=
 github.com/decred/dcrd/wire v1.7.5 h1:fRaaB5CrwYWGI3YVv50XHm54lsU1TB40WnnIJ4W6aGM=
