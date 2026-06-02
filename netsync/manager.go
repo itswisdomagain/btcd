@@ -760,7 +760,7 @@ func (sm *SyncManager) handleMixMsg(mmsg *mixMsg) error {
 		return nil
 	}
 
-	source := mixpool.Uint64Source(peer.ID())
+	source := mixpool.Int32Source(peer.ID())
 	accepted, err := sm.mixPool.AcceptMessage(mmsg.msg, source)
 
 	// Remove message from request maps. Either the mixpool already knows

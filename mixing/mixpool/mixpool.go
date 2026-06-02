@@ -101,22 +101,22 @@ func (m msgtype) String() string {
 // that first relayed them, but the caller may choose any scheme it desires.
 type Source interface {
 	// ID returns an opaque identifier that uniquely identifies the source.
-	ID() uint64
+	ID() int32
 }
 
-// Uint64Source implements the [Source] interface by returning the associated
-// uint64 as the ID.  This is primarily useful as a convenience for callers that
+// Int32Source implements the [Source] interface by returning the associated
+// int32 as the ID.  This is primarily useful as a convenience for callers that
 // do not require an additional object associated with the source.
-type Uint64Source uint64
+type Int32Source int32
 
-// ID returns the underlying uint64 associated with the source.
-func (s Uint64Source) ID() uint64 { return uint64(s) }
+// ID returns the underlying int32 associated with the source.
+func (s Int32Source) ID() int32 { return int32(s) }
 
-// Ensure [Uint64Source] implements the [Source] interface.
-var _ Source = (*Uint64Source)(nil)
+// Ensure [Int32Source] implements the [Source] interface.
+var _ Source = (*Int32Source)(nil)
 
 // ZeroSource implements the [Source] interface by returning 0 for the ID.
-const ZeroSource = Uint64Source(0)
+const ZeroSource = Int32Source(0)
 
 // entry describes non-PR messages accepted to the pool.
 type entry struct {
@@ -533,7 +533,7 @@ func (p *Pool) removeOrphan(hash *chainhash.Hash, id *idPubKey) {
 // entries removed.
 
 // This function MUST be called with the mixpool lock held (for writes).
-func (p *Pool) removeOrphansBySourceID(srcID uint64, maxToEvict uint64) uint64 {
+func (p *Pool) removeOrphansBySourceID(srcID int32, maxToEvict uint64) uint64 {
 	var numEvicted uint64
 	for hash, orphan := range p.orphans {
 		if numEvicted >= maxToEvict {
@@ -756,7 +756,7 @@ func (p *Pool) NonMixSpendsPR(tx *wire.MsgTx) bool {
 	p.mtx.RLock()
 	defer p.mtx.RUnlock()
 
-	if _, ok := p.sessionsByTxHash[tx.TxHash()]; ok {
+	if _, ok := p.sessionsByTxHash[txscript.ShallowTxCopyNoSigs(tx).TxHash()]; ok {
 		return false
 	}
 
@@ -1066,12 +1066,12 @@ func (p *Pool) limitNumOrphans() {
 	// severe connectivity issues or otherwise misbehaving.  This approach also
 	// has the added benefit of handling a variety of orphan flooding
 	// misbehavior well.
-	srcCounters := make(map[uint64]int)
+	srcCounters := make(map[int32]int)
 	for _, orphan := range p.orphans {
 		srcCounters[orphan.src.ID()]++
 	}
 	type srcWithCount struct {
-		srcID uint64
+		srcID int32
 		count int
 	}
 	srcCounts := make([]srcWithCount, 0, len(srcCounters))
@@ -1765,7 +1765,7 @@ func (p *Pool) acceptEntry(msg mixing.Message, msgtype msgtype, hash *chainhash.
 	p.messagesByIdentity[*id] = append(p.messagesByIdentity[*id], *hash)
 
 	if cm, ok := msg.(*wire.MsgMixConfirm); ok {
-		p.sessionsByTxHash[cm.Mix.TxHash()] = ses
+		p.sessionsByTxHash[txscript.ShallowTxCopyNoSigs(&cm.Mix).TxHash()] = ses
 	}
 
 	ses.incrementCountFor(msgtype)

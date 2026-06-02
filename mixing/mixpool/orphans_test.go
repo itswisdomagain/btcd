@@ -253,8 +253,8 @@ func TestOrphanEviction(t *testing.T) {
 	// Fill up the orphan pool to the max allowed with orphan messages while
 	// also pretending as though the orphans came from different sources.
 	p := NewPool(newTestBlockchain())
-	acceptOrphanAndCheck := func(msg mixing.Message, srcID uint64) {
-		accepted, err := p.AcceptMessage(msg, Uint64Source(srcID))
+	acceptOrphanAndCheck := func(msg mixing.Message, srcID int32) {
+		accepted, err := p.AcceptMessage(msg, Int32Source(srcID))
 		if len(accepted) != 0 {
 			t.Fatalf("accepted orphan message %T to main pool", msg)
 		}
@@ -269,7 +269,7 @@ func TestOrphanEviction(t *testing.T) {
 	numOrphansPerSource := (maxOrphans + 1 + (numSources - 1)) / numSources
 	for i := range maxOrphans {
 		orphan := orphans[i]
-		srcID := uint64(i/numOrphansPerSource) + 1
+		srcID := int32(i/numOrphansPerSource) + 1
 		acceptOrphanAndCheck(orphan, srcID)
 	}
 

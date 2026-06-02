@@ -14,7 +14,7 @@ package mixing
 // largest mix defined by these limits, 64 total peers may each spend five
 // P2PKH outputs each while contributing 17 P2PKH outputs (16 mixed outputs
 // plus one change output) with the estimated size of the resulting transaction
-// equaling 92309 bytes, just under the 100k standard threshold.
+// equaling 82510 bytes, just under the 100k standard threshold.
 //
 // These constants may change at any point without a major API bump to the
 // mixing module.
